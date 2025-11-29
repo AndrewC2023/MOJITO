@@ -19,9 +19,9 @@
       }
     }
   },
-  
-  "remoteUser": "vscode",
-  
+
+  "remoteUser": "root",
+
   "mounts": [
     "source=${localWorkspaceFolder}/dependencies,target=/workspaces/${localWorkspaceFolderBasename}/dependencies,type=bind,consistency=cached"
   ]
