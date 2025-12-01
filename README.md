@@ -5,7 +5,9 @@ Maneuver-Oriented dynamics-aware Joint Iterative Trajectory Optimization
 
 ### Using Dev Container (Recommended)
 
-This project uses a dev container for consistent development environments:
+This project uses a dev container for consistent development environments.
+
+#### With VS Code
 
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop)
 2. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) in VS Code
@@ -13,36 +15,31 @@ This project uses a dev container for consistent development environments:
 4. When prompted, click "Reopen in Container" (or use Command Palette: `Dev Containers: Reopen in Container`)
 5. The container will build and install all dependencies including PyTorch
 
+#### Without VS Code (Docker CLI)
+
+You can also build and run the container directly using Docker:
+
+```bash
+# Build the container
+docker build -t mojito-dev -f .devcontainer/Dockerfile .
+
+# Run the container with interactive shell
+docker run -it --rm -v $(pwd):/workspace mojito-dev
+```
+
 The dev container includes:
 - Python 3.11
-- PyTorch (CPU version by default)
-- All project dependencies from `requirements.txt`
+- Free Collision Library
 - Python extensions for VS Code
 
-### Local Setup (Alternative)
+
+### Local Development Setup (Alternative)
 
 There is currently not clear support on local setup. Refer to the dockerfile in the devcontainer folder for the necessary dependencies.
-
-**Note:** For GPU support with PyTorch, modify the dockerfile to enable CUDA or parallelization support
 
 ## Dependencies
 
 This project uses [gncpy](https://github.com/drjdlarson/gncpy) as a git submodule.
-This project also uses PyTorch3D for 3D operations and rendering. Install one of the following depending on your PyTorch/CUDA setup:
-
-- Install via pip (use wheel matching your PyTorch/CUDA):
-```bash
-pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/
-```
-
-- Or build/install from source:
-```bash
-git clone https://github.com/facebookresearch/pytorch3d.git
-cd pytorch3d
-pip install -e .
-```
-
-See the PyTorch3D installation guide for exact wheel selection: https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
 
 If using the devcontainer, add the appropriate installation step to the Dockerfile or requirements.txt.
 
