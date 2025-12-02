@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List
+from typing import List, Dict, NamedTuple
 import sys
 from pathlib import Path
 
@@ -7,6 +7,71 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from Utils.GeometryUtils import Box3D, PointXYZ
+
+
+class ObstacleProximity(NamedTuple):
+    """
+    Information about proximity to a single obstacle.
+    
+    Attributes:
+        obstacle_index: Index of the obstacle in the config space obstacle list
+        distance: Distance to obstacle (negative if colliding, positive if separated)
+        is_collision: True if box is colliding with this obstacle
+        penetration_depth: Depth of penetration if colliding (0 if not colliding)
+    """
+    obstacle_index: int
+    distance: float
+    is_collision: bool
+    penetration_depth: float
+
+
+class CollisionQueryResult(NamedTuple):
+    """
+    Complete result of a collision query against configuration space.
+    
+    This structure provides all information needed for smooth, continuous cost functions
+    in optimization (MPC, PSO, GA, etc). It allows you to:
+    
+    1. Heavily penalize actual collisions using total_penetration_depth
+       - Accounts for obstacle size (grazing a pebble vs hitting a wall)
+    
+    2. Create smooth proximity costs to encourage safe distances
+       - Access distance to each obstacle even when not colliding
+       - Implement gradual penalties as vehicle approaches obstacles
+    
+    3. Handle boundary violations with is_out_of_bounds flag
+    
+    Example cost function:
+        result = config_space.query_collision_detailed(vehicle.box)
+        
+        # Collision penalty (discontinuous at 0, but depth provides gradient)
+        collision_cost = result.total_penetration_depth * 1000.0
+        
+        # Proximity penalty (smooth, continuous gradient)
+        proximity_cost = 0.0
+        for obs in result.obstacle_data:
+            if not obs.is_collision and obs.distance < safe_distance:
+                proximity_cost += (safe_distance - obs.distance) ** 2
+        
+        # Boundary penalty
+        boundary_cost = 1000.0 if result.is_out_of_bounds else 0.0
+        
+        total_cost = collision_cost + proximity_cost + boundary_cost
+    
+    Attributes:
+        has_collision: True if any collision detected (obstacles or boundaries)
+        is_out_of_bounds: True if outside boundary limits
+        obstacle_data: List of ObstacleProximity for each obstacle
+        total_penetration_depth: Sum of all penetration depths (for cost function)
+        num_collisions: Number of obstacles being collided with
+        min_obstacle_distance: Distance to nearest obstacle (inf if none)
+    """
+    has_collision: bool
+    is_out_of_bounds: bool
+    obstacle_data: List[ObstacleProximity]
+    total_penetration_depth: float
+    num_collisions: int
+    min_obstacle_distance: float
 
 class ConfigurationSpace3D:
     """
@@ -251,6 +316,113 @@ class ConfigurationSpace3D:
                 min_distance = distance
         
         return min_distance
+    
+    def get_distance_to_boundaries(self, box: Box3D) -> float:
+        """
+        Get the distance from a box to the nearest boundary wall.
+        
+        Args:
+            box: Box3D object to check distance from
+            
+        Returns:
+            float: Minimum distance to nearest boundary (negative if outside bounds)
+        """
+        cx, cy, cz = box.center.x, box.center.y, box.center.z
+        
+        # For rotated boxes, use half diagonal as conservative radius
+        half_diagonal = 0.5 * np.sqrt(box.size.x**2 + box.size.y**2 + box.size.z**2)
+        
+        # Distance to each boundary wall
+        dist_to_xmin = cx - half_diagonal - self.xMin
+        dist_to_xmax = self.xMax - (cx + half_diagonal)
+        dist_to_ymin = cy - half_diagonal - self.yMin
+        dist_to_ymax = self.yMax - (cy + half_diagonal)
+        dist_to_zmin = cz - half_diagonal - self.zMin
+        dist_to_zmax = self.zMax - (cz + half_diagonal)
+        
+        # Return minimum distance (negative if out of bounds)
+        return min(dist_to_xmin, dist_to_xmax, dist_to_ymin, dist_to_ymax, dist_to_zmin, dist_to_zmax)
+    
+    def query_collision_detailed(self, box: Box3D) -> CollisionQueryResult:
+        """
+        Perform comprehensive collision query with detailed information for cost functions.
+        
+        Returns information about all obstacles including:
+        - Which obstacles are being collided with
+        - Penetration depth for each collision
+        - Distance to each obstacle (even non-colliding ones)
+        - Total penetration depth (sum of all collisions)
+        
+        This provides smooth, continuous data for optimization cost functions.
+        
+        Args:
+            box: Box3D object to query
+            
+        Returns:
+            CollisionQueryResult with complete proximity information
+        """
+        # Check boundary collision
+        is_out_of_bounds = not self.is_box_in_bounds(box)
+        
+        # Collect data for each obstacle
+        obstacle_data = []
+        total_penetration = 0.0
+        num_collisions = 0
+        min_distance = float('inf')
+        
+        for idx, obstacle in enumerate(self.obstacles):
+            # Get distance (negative if penetrating)
+            distance = box.distance_to(obstacle)
+            
+            # Determine collision and penetration depth
+            is_collision = distance <= 0
+            penetration = abs(distance) if is_collision else 0.0
+            
+            # Update aggregate statistics
+            if is_collision:
+                num_collisions += 1
+                total_penetration += penetration
+            
+            # Track minimum distance
+            if not is_collision and distance < min_distance:
+                min_distance = distance
+            
+            # Store obstacle data
+            obstacle_data.append(ObstacleProximity(
+                obstacle_index=idx,
+                distance=distance,
+                is_collision=is_collision,
+                penetration_depth=penetration
+            ))
+        
+        # If no non-colliding obstacles, min_distance stays inf
+        has_collision = is_out_of_bounds or num_collisions > 0
+        
+        return CollisionQueryResult(
+            has_collision=has_collision,
+            is_out_of_bounds=is_out_of_bounds,
+            obstacle_data=obstacle_data,
+            total_penetration_depth=total_penetration,
+            num_collisions=num_collisions,
+            min_obstacle_distance=min_distance
+        )
+    
+    @staticmethod
+    def box_to_box_distance(box1: Box3D, box2: Box3D) -> float:
+        """
+        Calculate the closest distance between two boxes.
+        
+        Uses FCL's distance computation which calculates the true minimum distance
+        between the closest points on the two boxes (not just center-to-center).
+        
+        Args:
+            box1: First Box3D object
+            box2: Second Box3D object
+            
+        Returns:
+            float: Closest distance between boxes (0 if colliding, negative if penetrating)
+        """
+        return box1.distance_to(box2)
     
     def get_num_obstacles(self) -> int:
         """Get the number of obstacles in the configuration space."""

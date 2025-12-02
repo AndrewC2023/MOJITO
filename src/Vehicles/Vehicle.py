@@ -206,36 +206,6 @@ class Vehicle:
         """
         return np.array([self.box.center.x, self.box.center.y, self.box.center.z])
     
-    def check_collision_with_config_space(self, config_space) -> bool:
-        """Check collision with a ConfigurationSpace3D.
-        
-        Parameters
-        ----------
-        config_space : ConfigurationSpace3D
-            The configuration space to check against
-            
-        Returns
-        -------
-        bool
-            True if collision detected
-        """
-        return config_space.check_collision(self.box)
-    
-    def get_nearest_obstacle_distance(self, config_space) -> float:
-        """Get distance to nearest obstacle in configuration space.
-        
-        Parameters
-        ----------
-        config_space : ConfigurationSpace3D
-            The configuration space with obstacles
-            
-        Returns
-        -------
-        float
-            Distance to nearest obstacle
-        """
-        return config_space.get_nearest_obstacle_distance(self.box)
-    
     def __repr__(self) -> str:
         """String representation."""
         state_dim = len(self.state) if self.state is not None else "unset"
