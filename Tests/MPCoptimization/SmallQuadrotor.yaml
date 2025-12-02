@@ -1,0 +1,44 @@
+# Small quadcopter configuration - Lightweight and Reactive
+# ~800g total mass, ~12 inch (0.3m) frame, agile response
+# Suitable for navigating through narrow openings
+
+!AircraftParams
+aero: !AeroParams
+  cd: 0.55  # Drag coefficient (slightly higher due to larger frontal area)
+
+mass: !MassParams
+  mass_kg: 0.8  # 800g total mass
+  cg_m: [0.0, 0.0, 0.0]  # Center of mass at origin
+  inertia_kgm2:  # Moment of inertia matrix (12-inch frame)
+    - [0.0035, 0.0, 0.0]     # Ixx - roll axis
+    - [0.0, 0.0035, 0.0]     # Iyy - pitch axis
+    - [0.0, 0.0, 0.005]      # Izz - yaw axis (slightly higher)
+
+geo: !GeoParams
+  front_area_m2: [0.015, 0.015, 0.015, 0.015]  # ~12" frame frontal area
+
+prop: !PropParams
+  # Polynomial coefficients for thrust: T = c0*cmd^2 + c1*cmd + c2
+  # DESCENDING ORDER: [c2, c1, c0] where T = c2*x^2 + c1*x + c0
+  # Normalized motor command [0, 1] -> thrust in Newtons
+  # For hover: 4 motors * thrust ≈ 0.8kg * 9.81 ≈ 7.85N total, ~1.96N per motor
+  # Max thrust: ~4.0N per motor for 2:1 thrust-to-weight ratio (reactive/agile)
+  poly_thrust: [4.0, 0.0, 0.0]  # Quadratic: T = 4.0*cmd^2, 4.0N at cmd=1.0 per motor
+  
+  # Polynomial coefficients for torque: Q = c0*cmd^2 + c1*cmd + c2  
+  # DESCENDING ORDER: [c2, c1, c0]
+  # Reaction torque in N-m (5-inch props on 2206 motors)
+  poly_torque: [0.08, 0.0, 0.0]  # Quadratic: Q = 0.08*cmd^2, ~0.08 N-m at cmd=1.0
+
+motor: !MotorParams
+  # X configuration: motors at 45 degrees from body axes
+  # Arm length: ~0.15m (12-inch/300mm frame, motor-to-motor ~0.3m)
+  pos_m:
+    - [0.106, 0.106, 0.0]   # Front-right motor (45°, 0.15m arm length)
+    - [-0.106, 0.106, 0.0]  # Front-left motor (135°)
+    - [-0.106, -0.106, 0.0] # Rear-left motor (225°)
+    - [0.106, -0.106, 0.0]  # Rear-right motor (315°)
+  
+  # Direction: +1 = CCW, -1 = CW (viewed from above)
+  # Standard X configuration: FR(CW), FL(CCW), RL(CW), RR(CCW)
+  dir: [-1, 1, -1, 1]

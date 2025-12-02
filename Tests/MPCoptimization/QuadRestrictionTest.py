@@ -13,6 +13,12 @@ import numpy as np
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
 from dependencies.gncpy.src.gncpy.dynamics.aircraft import SimpleMultirotor
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent / "src"))
+from Vehicles.Vehicle import Vehicle
+from Controls.NACMPC import NACMPC
+
 # configuration setup (Note we are in NED frame - this makes dynamics frame conversion easier for me)
 dim = [0, 30, -7.5, 7.5, 0, -15]
 
