@@ -29,7 +29,7 @@ def test_boundary_checking():
     in_bounds = config_space.is_in_bounds(vehicle)
     print(f"  In bounds: {in_bounds}")
     assert in_bounds, "Small box at center should be in bounds"
-    print("  ✓ Pass")
+    print("  Pass! Pass")
     
     # Test 2: Large box at center might extend outside
     print("\nTest 2: Large box (8x8x8) at center (5,5,5)")
@@ -42,7 +42,7 @@ def test_boundary_checking():
     print(f"  (Should be False - box extends from 1 to 9 in each axis, touches boundaries)")
     # Box of size 8 centered at 5 means edges at 1 and 9, which is within [0,10]
     # But it's very close to the boundaries
-    print(f"  ✓ Result: {in_bounds}")
+    print(f"  Pass! Result: {in_bounds}")
     
     # Test 3: Box positioned to go outside x boundary
     print("\nTest 3: Box (1x1x1) at position (9.7, 5, 5)")
@@ -54,7 +54,7 @@ def test_boundary_checking():
     print(f"  In bounds: {in_bounds}")
     print(f"  (Box extends from 9.2 to 10.2 in x, goes outside xMax=10)")
     assert not in_bounds, "Box extending outside should be out of bounds"
-    print("  ✓ Pass - correctly detected out of bounds")
+    print("  Pass! Pass - correctly detected out of bounds")
     
     # Test 4: Box completely outside
     print("\nTest 4: Box (1x1x1) at position (-2, 5, 5)")
@@ -65,7 +65,7 @@ def test_boundary_checking():
     in_bounds = config_space.is_in_bounds(outside_neg)
     print(f"  In bounds: {in_bounds}")
     assert not in_bounds, "Box completely outside should be out of bounds"
-    print("  ✓ Pass - correctly detected out of bounds")
+    print("  Pass! Pass - correctly detected out of bounds")
     
     # Test 5: Sphere on boundary
     print("\nTest 5: Sphere (radius=0.5) at position (0.5, 5, 5)")
@@ -76,7 +76,7 @@ def test_boundary_checking():
     in_bounds = config_space.is_in_bounds(sphere_edge)
     print(f"  In bounds: {in_bounds}")
     print(f"  (Sphere just touches xMin boundary at x=0)")
-    print(f"  ✓ Result: {in_bounds}")
+    print(f"  Pass! Result: {in_bounds}")
     
     # Test 6: Distance to boundaries
     print("\nTest 6: Distance to boundaries for box at (5, 5, 5)")
@@ -87,7 +87,7 @@ def test_boundary_checking():
     distance = config_space.get_distance_to_boundaries(vehicle_center)
     print(f"  Distance to nearest boundary: {distance:.3f}m")
     print(f"  (Should be approximately 4.75m to any wall)")
-    print(f"  ✓ Got distance: {distance:.3f}m")
+    print(f"  Pass! Got distance: {distance:.3f}m")
     
     # Test 7: Distance when close to boundary
     print("\nTest 7: Distance to boundaries for box at (1, 5, 5)")
@@ -98,7 +98,7 @@ def test_boundary_checking():
     distance = config_space.get_distance_to_boundaries(near_edge)
     print(f"  Distance to nearest boundary: {distance:.3f}m")
     print(f"  (Should be approximately 0.75m to xMin wall)")
-    print(f"  ✓ Got distance: {distance:.3f}m")
+    print(f"  Pass! Got distance: {distance:.3f}m")
     
     # Test 8: Different geometry types
     print("\nTest 8: Cylinder in bounds")
@@ -108,7 +108,7 @@ def test_boundary_checking():
     )
     in_bounds = config_space.is_in_bounds(cylinder)
     print(f"  Cylinder (r=0.5, h=2.0) at (5,5,5) in bounds: {in_bounds}")
-    print(f"  ✓ Result: {in_bounds}")
+    print(f"  Pass! Result: {in_bounds}")
     
     print("\n" + "=" * 60)
     print("Boundary checking tests completed!")
