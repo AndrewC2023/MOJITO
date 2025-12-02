@@ -3,10 +3,13 @@ Test the detailed collision query functionality for cost function optimization.
 """
 import sys
 from pathlib import Path
+import numpy as np
+import fcl
+
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
-from Utils.GeometryUtils import Box3D, PointXYZ
+from ConfigurationSpace.Obstacles import StaticObstacle
 
 def test_collision_query():
     print("Testing detailed collision query...\n")
@@ -14,29 +17,41 @@ def test_collision_query():
     # Create configuration space
     config_space = ConfigurationSpace3D([0, 10, 0, 10, 0, 10])
     
-    # Add obstacles
-    obstacle1 = Box3D(center=PointXYZ(3, 3, 5), size=PointXYZ(1, 1, 2))
-    obstacle2 = Box3D(center=PointXYZ(7, 7, 5), size=PointXYZ(1.5, 1.5, 2))
-    obstacle3 = Box3D(center=PointXYZ(5, 5, 8), size=PointXYZ(0.5, 0.5, 0.5))
+    # Add obstacles using FCL directly
+    obstacle1 = StaticObstacle(
+        fcl.Box(1.0, 1.0, 2.0),
+        fcl.Transform(np.eye(3), [3.0, 3.0, 5.0])
+    )
+    obstacle2 = StaticObstacle(
+        fcl.Box(1.5, 1.5, 2.0),
+        fcl.Transform(np.eye(3), [7.0, 7.0, 5.0])
+    )
+    obstacle3 = StaticObstacle(
+        fcl.Box(0.5, 0.5, 0.5),
+        fcl.Transform(np.eye(3), [5.0, 5.0, 8.0])
+    )
     
     config_space.add_obstacles([obstacle1, obstacle2, obstacle3])
     
     # Test scenarios
     test_cases = [
-        ("Far from all obstacles", PointXYZ(1, 1, 2), PointXYZ(0.3, 0.3, 0.3)),
-        ("Close to obstacle 1", PointXYZ(3.8, 3, 5), PointXYZ(0.3, 0.3, 0.3)),
-        ("Colliding with obstacle 1", PointXYZ(3, 3, 5), PointXYZ(0.6, 0.6, 1)),
-        ("Colliding with multiple", PointXYZ(4, 4, 5.5), PointXYZ(2, 2, 2)),
-        ("Out of bounds", PointXYZ(-1, 5, 5), PointXYZ(0.3, 0.3, 0.3)),
+        ("Far from all obstacles", [1.0, 1.0, 2.0], [0.3, 0.3, 0.3]),
+        ("Close to obstacle 1", [3.8, 3.0, 5.0], [0.3, 0.3, 0.3]),
+        ("Colliding with obstacle 1", [3.0, 3.0, 5.0], [0.6, 0.6, 1.0]),
+        ("Colliding with multiple", [4.0, 4.0, 5.5], [2.0, 2.0, 2.0]),
+        ("Out of bounds", [-1.0, 5.0, 5.0], [0.3, 0.3, 0.3]),
     ]
     
     for description, center, size in test_cases:
         print(f"=== {description} ===")
-        vehicle = Box3D(center=center, size=size)
+        # Create vehicle using FCL
+        vehicle_geom = fcl.Box(size[0], size[1], size[2])
+        vehicle_transform = fcl.Transform(np.eye(3), center)
+        vehicle = fcl.CollisionObject(vehicle_geom, vehicle_transform)
         
         result = config_space.query_collision_detailed(vehicle)
         
-        print(f"Position: ({center.x}, {center.y}, {center.z})")
+        print(f"Position: ({center[0]}, {center[1]}, {center[2]})")
         print(f"Has collision: {result.has_collision}")
         print(f"Out of bounds: {result.is_out_of_bounds}")
         print(f"Number of collisions: {result.num_collisions}")

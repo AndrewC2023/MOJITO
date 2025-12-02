@@ -61,7 +61,7 @@ def test_double_integrator_vehicle():
     distance = vehicle.get_nearest_obstacle_distance(config_space)
     print(f"Distance to nearest obstacle: {distance:.3f} m")
     
-    print("\n✓ DoubleIntegrator test completed!\n")
+    print("\nPass! DoubleIntegrator test completed!\n")
 
 
 def test_simple_multirotor_vehicle():
@@ -93,7 +93,7 @@ def test_simple_multirotor_vehicle():
             # Access dynamics directly
             print(f"Vehicle mass: {vehicle.model.vehicle.mass} kg")
             
-            print("\n✓ SimpleMultirotor test completed!\n")
+            print("\nPass! SimpleMultirotor test completed!\n")
         except Exception as e:
             print(f"⚠ Could not create SimpleMultirotor (needs valid YAML): {e}\n")
     else:
@@ -123,7 +123,7 @@ def test_already_instantiated_model():
     # Both vehicle.model and dynamics_model point to the same object
     print(f"Same model instance: {vehicle.model is dynamics_model}")
     
-    print("\n✓ Pre-instantiated model test completed!\n")
+    print("\nPass! Pre-instantiated model test completed!\n")
 
 
 if __name__ == "__main__":

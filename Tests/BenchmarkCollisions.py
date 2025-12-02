@@ -175,7 +175,7 @@ Expected performance for your use case:
 - Total evals per MPC step: ~100,000 collision checks
 - Estimated time: ~{100000/(num_checks/elapsed):.2f} seconds per MPC iteration
 
-Optimization status: ✓ OPTIMIZED
+Optimization status: Pass! OPTIMIZED
 - Cached FCL request objects
 - Direct collision object updates (no recreation)
 - Early exit on collision detection

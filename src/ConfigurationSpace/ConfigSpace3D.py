@@ -2,11 +2,13 @@ import numpy as np
 from typing import List, Dict, NamedTuple
 import sys
 from pathlib import Path
+import fcl
 
 # Add parent directory to path to allow imports
 sys.path.append(str(Path(__file__).parent.parent))
 
 from Utils.GeometryUtils import Box3D, PointXYZ
+from ConfigurationSpace.Obstacles import Obstacle, StaticObstacle, SimpleMovingObstacle
 
 
 class ObstacleProximity(NamedTuple):
@@ -75,10 +77,11 @@ class CollisionQueryResult(NamedTuple):
 
 class ConfigurationSpace3D:
     """
-    3D Configuration Space for motion planning with Box3D obstacles.
+    3D Configuration Space for motion planning with FCL-based obstacles.
     
-    Manages a bounded 3D space with obstacles represented as Box3D objects.
-    Provides methods to add/remove obstacles and check for collisions.
+    Manages a bounded 3D space with obstacles represented as Obstacle objects.
+    Provides methods to add/remove obstacles and check for collisions using FCL.
+    Methods accept both fcl.CollisionObject and Box3D (for backward compatibility).
     """
     
     def __init__(self, *args, **kwargs):
@@ -128,24 +131,26 @@ class ConfigurationSpace3D:
                 raise ValueError("Dimensions must have at least 6 values: [xMin, xMax, yMin, yMax, zMin, zMax]")
         
         # Initialize obstacle list
-        self.obstacles: List[Box3D] = []
+        self.obstacles: List[Obstacle] = []
         
         # Create boundary box for the configuration space
         self._update_boundary_box()
     
     def _update_boundary_box(self):
         """Update the boundary box representing the field bounds."""
-        center = PointXYZ(
+        center = np.array([
             (self.xMin + self.xMax) / 2,
             (self.yMin + self.yMax) / 2,
             (self.zMin + self.zMax) / 2
-        )
-        size = PointXYZ(
-            self.xMax - self.xMin,
-            self.yMax - self.yMin,
-            self.zMax - self.zMin
-        )
-        self.boundary_box = Box3D(center, size)
+        ])
+        size_x = self.xMax - self.xMin
+        size_y = self.yMax - self.yMin
+        size_z = self.zMax - self.zMin
+        
+        # Create FCL boundary collision object
+        boundary_geom = fcl.Box(size_x, size_y, size_z)
+        boundary_transform = fcl.Transform(np.eye(3), center)
+        self.boundary_collision_object = fcl.CollisionObject(boundary_geom, boundary_transform)
     
     def reconfigure(self, dimensions: List[float]):
         """
@@ -166,33 +171,33 @@ class ConfigurationSpace3D:
         self._update_boundary_box()
         self.obstacles.clear()
     
-    def add_obstacle(self, obstacle: Box3D):
+    def add_obstacle(self, obstacle: Obstacle):
         """
-        Add a Box3D obstacle to the configuration space.
+        Add an Obstacle to the configuration space.
         
         Args:
-            obstacle: Box3D object to add as an obstacle
+            obstacle: Obstacle object (StaticObstacle, SimpleMovingObstacle, etc.) to add
         """
-        if not isinstance(obstacle, Box3D):
-            raise ValueError("Obstacle must be a Box3D object")
+        if not isinstance(obstacle, Obstacle):
+            raise ValueError("Obstacle must be an Obstacle object")
         self.obstacles.append(obstacle)
     
-    def add_obstacles(self, obstacles: List[Box3D]):
+    def add_obstacles(self, obstacles: List[Obstacle]):
         """
-        Add multiple Box3D obstacles to the configuration space.
+        Add multiple Obstacles to the configuration space.
         
         Args:
-            obstacles: List of Box3D objects to add as obstacles
+            obstacles: List of Obstacle objects to add
         """
         for obstacle in obstacles:
             self.add_obstacle(obstacle)
     
-    def remove_obstacle(self, obstacle: Box3D):
+    def remove_obstacle(self, obstacle: Obstacle):
         """
         Remove a specific obstacle from the configuration space.
         
         Args:
-            obstacle: Box3D object to remove
+            obstacle: Obstacle object to remove
         """
         if obstacle in self.obstacles:
             self.obstacles.remove(obstacle)
@@ -213,92 +218,178 @@ class ConfigurationSpace3D:
         """Remove all obstacles from the configuration space."""
         self.obstacles.clear()
     
-    def is_point_in_bounds(self, point: PointXYZ) -> bool:
+    @staticmethod
+    def _to_collision_object(obj):
+        """
+        Convert input to fcl.CollisionObject.
+        
+        Args:
+            obj: Either fcl.CollisionObject or Box3D object
+            
+        Returns:
+            fcl.CollisionObject
+            
+        Raises:
+            TypeError: If obj is neither fcl.CollisionObject nor Box3D
+        """
+        if isinstance(obj, fcl.CollisionObject):
+            return obj
+        elif isinstance(obj, Box3D):
+            return obj.collision_object
+        else:
+            raise TypeError(f"Expected fcl.CollisionObject or Box3D, got {type(obj)}")
+    
+    def is_point_in_bounds(self, point) -> bool:
         """
         Check if a point is within the configuration space bounds.
         
         Args:
-            point: PointXYZ to check
+            point: PointXYZ, tuple, list, or numpy array [x, y, z]
             
         Returns:
             bool: True if point is within bounds, False otherwise
         """
-        return (self.xMin <= point.x <= self.xMax and
-                self.yMin <= point.y <= self.yMax and
-                self.zMin <= point.z <= self.zMax)
+        if isinstance(point, PointXYZ):
+            x, y, z = point.x, point.y, point.z
+        else:
+            x, y, z = point[0], point[1], point[2]
+        
+        return (self.xMin <= x <= self.xMax and
+                self.yMin <= y <= self.yMax and
+                self.zMin <= z <= self.zMax)
     
-    def is_box_in_bounds(self, box: Box3D) -> bool:
+    def is_in_bounds(self, obj) -> bool:
         """
-        Check if a box is entirely within the configuration space bounds.
+        Check if an object is entirely within the configuration space bounds.
+        
+        Uses FCL to check if the object is fully contained within the boundary box.
+        We create 6 boundary planes (walls) and check that the object doesn't
+        collide with the "outside" of any wall.
         
         Args:
-            box: Box3D object to check
+            obj: fcl.CollisionObject or Box3D object to check
             
         Returns:
-            bool: True if box is entirely within bounds, False otherwise
+            bool: True if object is entirely within bounds, False otherwise
         """
-        # Fast AABB check: use box center and half-extents
-        # This is much faster than checking all 8 vertices for axis-aligned or near-axis-aligned boxes
-        cx, cy, cz = box.center.x, box.center.y, box.center.z
+        collision_obj = self._to_collision_object(obj)
         
-        # For rotated boxes, we need the actual extent in each axis
-        # Conservative approach: use half diagonal as radius for quick rejection
-        half_diagonal = 0.5 * np.sqrt(box.size.x**2 + box.size.y**2 + box.size.z**2)
+        # Check collision with each boundary wall from the outside
+        # If we collide with a wall from outside, we're out of bounds
+        request = fcl.CollisionRequest()
+        result = fcl.CollisionResult()
         
-        # Check if center ± half_diagonal is within bounds
-        if (cx - half_diagonal < self.xMin or cx + half_diagonal > self.xMax or
-            cy - half_diagonal < self.yMin or cy + half_diagonal > self.yMax or
-            cz - half_diagonal < self.zMin or cz + half_diagonal > self.zMax):
+        # Get object position to determine which walls to check
+        transform = collision_obj.getTransform()
+        pos = transform.getTranslation()
+        cx, cy, cz = pos[0], pos[1], pos[2]
+        
+        # Simple and efficient: check if center point is in bounds
+        # Then use distance to boundaries to verify object doesn't extend outside
+        if not (self.xMin <= cx <= self.xMax and
+                self.yMin <= cy <= self.yMax and
+                self.zMin <= cz <= self.zMax):
             return False
+        
+        # Use distance computation to check clearance from each boundary
+        # Create thin box planes for each boundary face
+        epsilon = 0.01  # Thin plane thickness
+        
+        # Check each boundary face
+        boundary_faces = [
+            # X min face (left wall)
+            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [self.xMin - epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
+            # X max face (right wall)
+            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [self.xMax + epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
+            # Y min face (back wall)
+            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMin - epsilon/2, (self.zMin + self.zMax)/2])),
+            # Y max face (front wall)
+            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMax + epsilon/2, (self.zMin + self.zMax)/2])),
+            # Z min face (bottom wall)
+            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMin - epsilon/2])),
+            # Z max face (top wall)
+            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMax + epsilon/2])),
+        ]
+        
+        # Check if object collides with any external boundary face
+        for geom, transform in boundary_faces:
+            wall = fcl.CollisionObject(geom, transform)
+            result = fcl.CollisionResult()  # Create fresh result for each check
+            ret = fcl.collide(collision_obj, wall, request, result)
+            if ret > 0:  # Collision with boundary wall means out of bounds
+                return False
         
         return True
     
-    def check_collision(self, box: Box3D) -> bool:
+    def check_collision(self, obj, t: float = 0.0) -> bool:
         """
-        Check if a box collides with field boundaries or any obstacles.
+        Check if an object collides with field boundaries or any obstacles at time t.
         
         Args:
-            box: Box3D object to check for collision
+            obj: fcl.CollisionObject or Box3D object to check for collision
+            t: Time at which to check collision (default: 0.0)
             
         Returns:
             bool: True if collision detected, False otherwise
         """
-        # Check if box is out of bounds
-        if not self.is_box_in_bounds(box):
+        collision_obj = self._to_collision_object(obj)
+        
+        # Check if object is out of bounds
+        if not self.is_in_bounds(obj):
             return True
         
         # Early exit if no obstacles
         if not self.obstacles:
             return False
         
-        # Check collision with all obstacles (loop unrolling not needed, Python JIT handles it)
+        # Check collision with all obstacles at time t
+        request = fcl.CollisionRequest()
+        result = fcl.CollisionResult()
+        
         for obstacle in self.obstacles:
-            if box.check_collision(obstacle):
+            obstacle_collision_obj = obstacle.get_collision_object(t)
+            ret = fcl.collide(collision_obj, obstacle_collision_obj, request, result)
+            if ret > 0:  # Collision detected
                 return True
         
         return False
     
-    def check_collision_with_obstacles_only(self, box: Box3D) -> bool:
+    def check_collision_with_obstacles_only(self, obj, t: float = 0.0) -> bool:
         """
-        Check if a box collides with any obstacles (ignores boundaries).
+        Check if an object collides with any obstacles at time t (ignores boundaries).
         
         Args:
-            box: Box3D object to check for collision
+            obj: fcl.CollisionObject or Box3D object to check for collision
+            t: Time at which to check collision (default: 0.0)
             
         Returns:
             bool: True if collision with obstacle detected, False otherwise
         """
+        collision_obj = self._to_collision_object(obj)
+        
+        request = fcl.CollisionRequest()
+        result = fcl.CollisionResult()
+        
         for obstacle in self.obstacles:
-            if box.check_collision(obstacle):
+            obstacle_collision_obj = obstacle.get_collision_object(t)
+            ret = fcl.collide(collision_obj, obstacle_collision_obj, request, result)
+            if ret > 0:  # Collision detected
                 return True
         return False
     
-    def get_nearest_obstacle_distance(self, box: Box3D) -> float:
+    def get_nearest_obstacle_distance(self, obj, t: float = 0.0) -> float:
         """
-        Get the distance to the nearest obstacle.
+        Get the distance to the nearest obstacle at time t.
         
         Args:
-            box: Box3D object to check distance from
+            obj: fcl.CollisionObject or Box3D object to check distance from
+            t: Time at which to check distance (default: 0.0)
             
         Returns:
             float: Minimum distance to nearest obstacle (inf if no obstacles)
@@ -306,9 +397,17 @@ class ConfigurationSpace3D:
         if not self.obstacles:
             return float('inf')
         
+        collision_obj = self._to_collision_object(obj)
+        
         min_distance = float('inf')
+        request = fcl.DistanceRequest()
+        result = fcl.DistanceResult()
+        
         for obstacle in self.obstacles:
-            distance = box.distance_to(obstacle)
+            obstacle_collision_obj = obstacle.get_collision_object(t)
+            fcl.distance(collision_obj, obstacle_collision_obj, request, result)
+            distance = result.min_distance
+            
             # Early exit if already in collision
             if distance <= 0:
                 return 0.0
@@ -317,35 +416,63 @@ class ConfigurationSpace3D:
         
         return min_distance
     
-    def get_distance_to_boundaries(self, box: Box3D) -> float:
+    def get_distance_to_boundaries(self, obj) -> float:
         """
-        Get the distance from a box to the nearest boundary wall.
+        Get the distance from an object to the nearest boundary wall.
+        
+        Uses FCL distance computation against each boundary face.
         
         Args:
-            box: Box3D object to check distance from
+            obj: fcl.CollisionObject or Box3D object to check distance from
             
         Returns:
-            float: Minimum distance to nearest boundary (negative if outside bounds)
+            float: Minimum distance to nearest boundary (negative if penetrating/outside bounds)
         """
-        cx, cy, cz = box.center.x, box.center.y, box.center.z
+        collision_obj = self._to_collision_object(obj)
         
-        # For rotated boxes, use half diagonal as conservative radius
-        half_diagonal = 0.5 * np.sqrt(box.size.x**2 + box.size.y**2 + box.size.z**2)
+        # Create thin box planes for each boundary face
+        epsilon = 0.01  # Thin plane thickness
         
-        # Distance to each boundary wall
-        dist_to_xmin = cx - half_diagonal - self.xMin
-        dist_to_xmax = self.xMax - (cx + half_diagonal)
-        dist_to_ymin = cy - half_diagonal - self.yMin
-        dist_to_ymax = self.yMax - (cy + half_diagonal)
-        dist_to_zmin = cz - half_diagonal - self.zMin
-        dist_to_zmax = self.zMax - (cz + half_diagonal)
+        boundary_faces = [
+            # X min face (left wall)
+            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [self.xMin - epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
+            # X max face (right wall)
+            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [self.xMax + epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
+            # Y min face (back wall)
+            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMin - epsilon/2, (self.zMin + self.zMax)/2])),
+            # Y max face (front wall)
+            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMax + epsilon/2, (self.zMin + self.zMax)/2])),
+            # Z min face (bottom wall)
+            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMin - epsilon/2])),
+            # Z max face (top wall)
+            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMax + epsilon/2])),
+        ]
         
-        # Return minimum distance (negative if out of bounds)
-        return min(dist_to_xmin, dist_to_xmax, dist_to_ymin, dist_to_ymax, dist_to_zmin, dist_to_zmax)
+        # Find minimum distance to any boundary face
+        min_distance = float('inf')
+        request = fcl.DistanceRequest()
+        result = fcl.DistanceResult()
+        
+        for geom, transform in boundary_faces:
+            wall = fcl.CollisionObject(geom, transform)
+            fcl.distance(collision_obj, wall, request, result)
+            distance = result.min_distance
+            
+            if distance < min_distance:
+                min_distance = distance
+        
+        # Subtract epsilon to account for the thin plane thickness
+        return min_distance - epsilon/2
     
-    def query_collision_detailed(self, box: Box3D) -> CollisionQueryResult:
+    def query_collision_detailed(self, obj, t: float = 0.0) -> CollisionQueryResult:
         """
-        Perform comprehensive collision query with detailed information for cost functions.
+        Perform comprehensive collision query with detailed information for cost functions at time t.
         
         Returns information about all obstacles including:
         - Which obstacles are being collided with
@@ -356,13 +483,16 @@ class ConfigurationSpace3D:
         This provides smooth, continuous data for optimization cost functions.
         
         Args:
-            box: Box3D object to query
+            obj: fcl.CollisionObject or Box3D object to query
+            t: Time at which to check collision (default: 0.0)
             
         Returns:
             CollisionQueryResult with complete proximity information
         """
+        collision_obj = self._to_collision_object(obj)
+        
         # Check boundary collision
-        is_out_of_bounds = not self.is_box_in_bounds(box)
+        is_out_of_bounds = not self.is_in_bounds(obj)
         
         # Collect data for each obstacle
         obstacle_data = []
@@ -370,9 +500,15 @@ class ConfigurationSpace3D:
         num_collisions = 0
         min_distance = float('inf')
         
+        dist_request = fcl.DistanceRequest()
+        dist_result = fcl.DistanceResult()
+        
         for idx, obstacle in enumerate(self.obstacles):
+            obstacle_collision_obj = obstacle.get_collision_object(t)
+            
             # Get distance (negative if penetrating)
-            distance = box.distance_to(obstacle)
+            fcl.distance(collision_obj, obstacle_collision_obj, dist_request, dist_result)
+            distance = dist_result.min_distance
             
             # Determine collision and penetration depth
             is_collision = distance <= 0
@@ -408,27 +544,34 @@ class ConfigurationSpace3D:
         )
     
     @staticmethod
-    def box_to_box_distance(box1: Box3D, box2: Box3D) -> float:
+    def compute_distance(obj1, obj2) -> float:
         """
-        Calculate the closest distance between two boxes.
+        Calculate the closest distance between two objects.
         
         Uses FCL's distance computation which calculates the true minimum distance
-        between the closest points on the two boxes (not just center-to-center).
+        between the closest points on the two objects.
         
         Args:
-            box1: First Box3D object
-            box2: Second Box3D object
+            obj1: First fcl.CollisionObject or Box3D object
+            obj2: Second fcl.CollisionObject or Box3D object
             
         Returns:
-            float: Closest distance between boxes (0 if colliding, negative if penetrating)
+            float: Closest distance between objects (0 if colliding, negative if penetrating)
         """
-        return box1.distance_to(box2)
+        collision_obj1 = ConfigurationSpace3D._to_collision_object(obj1)
+        collision_obj2 = ConfigurationSpace3D._to_collision_object(obj2)
+        
+        request = fcl.DistanceRequest()
+        result = fcl.DistanceResult()
+        fcl.distance(collision_obj1, collision_obj2, request, result)
+        
+        return result.min_distance
     
     def get_num_obstacles(self) -> int:
         """Get the number of obstacles in the configuration space."""
         return len(self.obstacles)
     
-    def get_obstacles(self) -> List[Box3D]:
+    def get_obstacles(self) -> List[Obstacle]:
         """Get a copy of the obstacles list."""
         return self.obstacles.copy()
     
@@ -446,65 +589,54 @@ class ConfigurationSpace3D:
 
 # Test main function
 if __name__ == "__main__":
-    def test_configuration_space_3d():
-        print("Testing ConfigurationSpace3D class...")
-        
-        # Create a configuration space
-        config_space = ConfigurationSpace3D([0, 10, 0, 10, 0, 10])
-        
-        print(f"Configuration space bounds: x[{config_space.xMin}, {config_space.xMax}], "
-              f"y[{config_space.yMin}, {config_space.yMax}], z[{config_space.zMin}, {config_space.zMax}]")
-        
-        # Create some obstacles
-        obstacle1 = Box3D(
-            center=PointXYZ(3, 3, 3),
-            size=PointXYZ(1, 1, 1)
-        )
-        
-        obstacle2 = Box3D(
-            center=PointXYZ(7, 7, 5),
-            size=PointXYZ(1.5, 1.5, 2)
-        )
-        
-        # Add obstacles
-        config_space.add_obstacle(obstacle1)
-        config_space.add_obstacle(obstacle2)
-        
-        print(f"Added {config_space.get_num_obstacles()} obstacles")
-        
-        # Create a test vehicle box
-        vehicle = Box3D(
-            center=PointXYZ(5, 5, 5),
-            size=PointXYZ(0.5, 0.5, 0.5)
-        )
-        
-        # Check collision
-        collision = config_space.check_collision(vehicle)
-        print(f"Vehicle at (5, 5, 5) collision: {collision}")
-        
-        # Move vehicle closer to obstacle
-        vehicle.update_transform(center=PointXYZ(3.5, 3.5, 3.5))
-        collision = config_space.check_collision(vehicle)
-        print(f"Vehicle at (3.5, 3.5, 3.5) collision: {collision}")
-        
-        # Get distance to nearest obstacle
-        distance = config_space.get_nearest_obstacle_distance(vehicle)
-        print(f"Distance to nearest obstacle: {distance:.3f}")
-        
-        # Test out of bounds
-        vehicle.update_transform(center=PointXYZ(-1, 5, 5))
-        collision = config_space.check_collision(vehicle)
-        print(f"Vehicle at (-1, 5, 5) (out of bounds) collision: {collision}")
-        
-        # Test removing obstacles
-        config_space.remove_obstacle_at_index(0)
-        print(f"After removing first obstacle: {config_space.get_num_obstacles()} obstacles remain")
-        
-        # Test clearing all obstacles
-        config_space.clear_obstacles()
-        print(f"After clearing: {config_space.get_num_obstacles()} obstacles")
-        
-        print("Test completed!")
+
+    print("Testing ConfigurationSpace3D class...")
     
-    # Run the test
-    test_configuration_space_3d()
+    # Create a configuration space
+    config_space = ConfigurationSpace3D([0, 10, 0, 10, 0, 10])
+    
+    print(f"Configuration space bounds: x[{config_space.xMin}, {config_space.xMax}], "
+            f"y[{config_space.yMin}, {config_space.yMax}], z[{config_space.zMin}, {config_space.zMax}]")
+    
+    building_geometry = fcl.Box(2.0, 2.0, 3.0)  # 2x2x3 meter building
+    building_transform = fcl.Transform(np.eye(3), [3.0, 3.0, 1.5])
+    building = StaticObstacle(building_geometry, building_transform)
+    config_space.add_obstacle(building)
+    
+    print(f"Added {config_space.get_num_obstacles()} obstacles")
+    
+    # Create a test vehicle using FCL directly
+    vehicle_geom = fcl.Box(0.5, 0.5, 0.5)
+    vehicle_transform = fcl.Transform(np.eye(3), [5.0, 5.0, 5.0])
+    vehicle = fcl.CollisionObject(vehicle_geom, vehicle_transform)
+    
+    # Check collision
+    collision = config_space.check_collision(vehicle)
+    print(f"Vehicle at (5, 5, 5) collision: {collision}")
+    
+    # Move vehicle closer to obstacle
+    vehicle_transform = fcl.Transform(np.eye(3), [3.5, 3.5, 3.5])
+    vehicle.setTransform(vehicle_transform)
+    collision = config_space.check_collision(vehicle)
+    print(f"Vehicle at (3.5, 3.5, 3.5) collision: {collision}")
+    
+    # Get distance to nearest obstacle
+    distance = config_space.get_nearest_obstacle_distance(vehicle)
+    print(f"Distance to nearest obstacle: {distance:.3f}")
+    
+    # Test out of bounds
+    vehicle_transform = fcl.Transform(np.eye(3), [-1.0, 5.0, 5.0])
+    vehicle.setTransform(vehicle_transform)
+    collision = config_space.check_collision(vehicle)
+    print(f"Vehicle at (-1, 5, 5) (out of bounds) collision: {collision}")
+    
+    # Test removing obstacles
+    config_space.remove_obstacle_at_index(0)
+    print(f"After removing first obstacle: {config_space.get_num_obstacles()} obstacles remain")
+    
+    # Test clearing all obstacles
+    config_space.clear_obstacles()
+    print(f"After clearing: {config_space.get_num_obstacles()} obstacles")
+    
+    print("Test completed!")
+    
