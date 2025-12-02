@@ -21,7 +21,7 @@
   },
 
   "remoteUser": "root",
-  "postCreateCommand": "git config --local core.autocrlf input && git config --local core.eol lf && git submodule update --init --recursive",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
 
   "mounts": [
     "source=${localWorkspaceFolder}/dependencies,target=/workspaces/${localWorkspaceFolderBasename}/dependencies,type=bind,consistency=cached"

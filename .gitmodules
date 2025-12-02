@@ -1,3 +1,4 @@
 [submodule "dependencies/gncpy"]
 	path = dependencies/gncpy
 	url = https://github.com/drjdlarson/gncpy.git
+	branch = OmnicoptorModelAndControl
