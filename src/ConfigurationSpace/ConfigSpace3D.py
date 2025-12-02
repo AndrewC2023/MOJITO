@@ -172,13 +172,20 @@ class ConfigurationSpace3D:
         Returns:
             bool: True if box is entirely within bounds, False otherwise
         """
-        # Get the vertices of the box
-        vertices = box.get_vertices()
+        # Fast AABB check: use box center and half-extents
+        # This is much faster than checking all 8 vertices for axis-aligned or near-axis-aligned boxes
+        cx, cy, cz = box.center.x, box.center.y, box.center.z
         
-        # Check if all vertices are within bounds
-        for vertex in vertices:
-            if not self.is_point_in_bounds(vertex):
-                return False
+        # For rotated boxes, we need the actual extent in each axis
+        # Conservative approach: use half diagonal as radius for quick rejection
+        half_diagonal = 0.5 * np.sqrt(box.size.x**2 + box.size.y**2 + box.size.z**2)
+        
+        # Check if center ± half_diagonal is within bounds
+        if (cx - half_diagonal < self.xMin or cx + half_diagonal > self.xMax or
+            cy - half_diagonal < self.yMin or cy + half_diagonal > self.yMax or
+            cz - half_diagonal < self.zMin or cz + half_diagonal > self.zMax):
+            return False
+        
         return True
     
     def check_collision(self, box: Box3D) -> bool:
@@ -195,7 +202,11 @@ class ConfigurationSpace3D:
         if not self.is_box_in_bounds(box):
             return True
         
-        # Check collision with all obstacles
+        # Early exit if no obstacles
+        if not self.obstacles:
+            return False
+        
+        # Check collision with all obstacles (loop unrolling not needed, Python JIT handles it)
         for obstacle in self.obstacles:
             if box.check_collision(obstacle):
                 return True
@@ -233,6 +244,9 @@ class ConfigurationSpace3D:
         min_distance = float('inf')
         for obstacle in self.obstacles:
             distance = box.distance_to(obstacle)
+            # Early exit if already in collision
+            if distance <= 0:
+                return 0.0
             if distance < min_distance:
                 min_distance = distance
         

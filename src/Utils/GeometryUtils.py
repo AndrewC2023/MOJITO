@@ -112,12 +112,13 @@ class Box3D:
             self.center = center
         if rotation is not None:
             self.rotation = rotation
+        else:
+            # Use identity if rotation not provided (avoid re-creating)
+            if rotation is None and not hasattr(self, '_identity_rotation'):
+                self.rotation = np.eye(3, dtype=np.float64)
             
-        # Update transform
-        self.transform = fcl.Transform(self.rotation, [self.center.x, self.center.y, self.center.z])
-        
-        # Update collision object
-        self.collision_object = fcl.CollisionObject(self.geometry, self.transform)
+        # Update transform directly on existing collision object (faster than creating new one)
+        self.collision_object.setTransform(fcl.Transform(self.rotation, [self.center.x, self.center.y, self.center.z]))
     
     def check_collision(self, other: 'Box3D') -> bool:
         """
@@ -129,10 +130,12 @@ class Box3D:
         Returns:
             bool: True if boxes collide, False otherwise
         """
-        request = fcl.CollisionRequest()
-        result = fcl.CollisionResult()
+        # Cache request object, but create new result each time (FCL requirement)
+        if not hasattr(self, '_collision_request'):
+            self._collision_request = fcl.CollisionRequest()
         
-        ret = fcl.collide(self.collision_object, other.collision_object, request, result)
+        result = fcl.CollisionResult()
+        fcl.collide(self.collision_object, other.collision_object, self._collision_request, result)
         
         return result.is_collision
     
@@ -146,10 +149,12 @@ class Box3D:
         Returns:
             float: Minimum distance between the boxes (0 if colliding)
         """
-        request = fcl.DistanceRequest()
-        result = fcl.DistanceResult()
+        # Cache request object, but create new result each time (FCL requirement)
+        if not hasattr(self, '_distance_request'):
+            self._distance_request = fcl.DistanceRequest()
         
-        ret = fcl.distance(self.collision_object, other.collision_object, request, result)
+        result = fcl.DistanceResult()
+        fcl.distance(self.collision_object, other.collision_object, self._distance_request, result)
         
         return result.min_distance
     
