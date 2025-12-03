@@ -234,19 +234,6 @@ def create_rotated_box(center: PointXYZ, size: PointXYZ,
     
     return Box3D(center, size, rotation)
 
-
-# store bot information globally, IDK if we want this
-BotLength = 1 # meters
-BotWidth = 0.5 # meters
-BotMaxRadius = np.sqrt(BotLength**2 + BotWidth**2)/2
-BotPolygon = [
-    PointXY(-BotLength/2, -BotWidth/2),
-    PointXY(BotLength/2, -BotWidth/2),
-    PointXY(BotLength/2, BotWidth/2),
-    PointXY(-BotLength/2, BotWidth/2)
-]
-BotCoverageRange = 2.5 # meters
-
 def isPointInsidePolygon(Point: PointXY, polygon: List[PointXY]) -> bool:
     inPolygon = False
     n = len(polygon)
