@@ -502,4 +502,4 @@ history = optimizer.get_iteration_history()
 print(f"\nConvergence history ({len(history)} iterations):")
 print(f"  {history}")
 
-print("\n✅ MPC optimization complete!")
+print("\n MPC optimization complete!")

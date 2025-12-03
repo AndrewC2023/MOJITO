@@ -86,7 +86,7 @@ def test_cem_on_quadratic():
     assert final_cost < 1e-3, f"Failed to converge: cost = {final_cost}"
     assert np.allclose(solution, 0.5, atol=0.05), f"Solution error too large"
     
-    print("✅ PASSED: Converged to global minimum")
+    print(" PASSED: Converged to global minimum")
 
 
 def test_cem_on_rosenbrock():
@@ -123,7 +123,7 @@ def test_cem_on_rosenbrock():
     # Rosenbrock is harder - allow larger tolerance
     assert final_cost < 5.0, f"Failed to converge reasonably: cost = {final_cost}"
     
-    print("✅ PASSED: Found good solution in banana valley")
+    print(" PASSED: Found good solution in banana valley")
 
 
 def test_cem_on_rastrigin():
@@ -170,7 +170,7 @@ def test_cem_on_rastrigin():
     # Should at least reach near the global basin
     assert final_cost < 20.0, f"Failed to find good region: cost = {final_cost}"
     
-    print("✅ PASSED: Successfully navigated multimodal landscape")
+    print(" PASSED: Successfully navigated multimodal landscape")
 
 
 def test_cem_convergence_tracking():
@@ -204,7 +204,7 @@ def test_cem_convergence_tracking():
         assert history[i+1] <= history[i], \
             f"Cost increased from {history[i]} to {history[i+1]} at iteration {i}"
     
-    print("✅ PASSED: Cost monotonically decreases")
+    print(" PASSED: Cost monotonically decreases")
 
 
 def test_cem_with_bounds():
@@ -249,7 +249,7 @@ def test_cem_with_bounds():
     # Should find unconstrained optimum since it's within bounds
     assert np.allclose(solution, 0.5, atol=0.05), "Failed to find optimum"
     
-    print("✅ PASSED: Bounds satisfied and optimal solution found")
+    print(" PASSED: Bounds satisfied and optimal solution found")
 
 
 if __name__ == "__main__":
@@ -264,5 +264,5 @@ if __name__ == "__main__":
     test_cem_with_bounds()
     
     print("\n" + "#"*60)
-    print("# ✅ ALL TESTS PASSED")
+    print("#  ALL TESTS PASSED")
     print("#"*60)
