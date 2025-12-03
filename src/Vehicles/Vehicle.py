@@ -7,6 +7,13 @@ import fcl
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Add gncpy dependency to path
+root_dir = Path(__file__).parent.parent.parent
+sys.path.append(str(root_dir / "dependencies" / "gncpy" / "src"))
+
+import gncpy.math as gmath
+from Utils.GeometryUtils import DCM3D
+
 
 class Vehicle:
     """Vehicle class integrating gncpy dynamics with FCL collision geometry.
@@ -46,9 +53,11 @@ class Vehicle:
         initial_state : np.ndarray, optional
             Initial state vector. If None, state must be set later.
         state_indices : dict, optional
-            Dictionary mapping 'position' and optionally 'rotation' to state indices.
-            Example: {'position': [0, 1, 2], 'rotation': [6, 7, 8]}
-            If None, assumes position at [0, 1, 2].
+            Dictionary mapping 'position' (required) and optionally 'dcm' to state indices.
+            'position': [x_idx, y_idx, z_idx] - indices for position in state vector
+            'dcm': [i0, i1, ..., i8] - indices for 9-element DCM (row-major) in state vector
+            Example: {'position': [0, 1, 2], 'dcm': [9, 10, 11, 12, 13, 14, 15, 16, 17]}
+            If None, assumes position at [0, 1, 2] with no rotation (identity DCM).
         **dynamics_kwargs : dict
             Arguments passed to dynamics class constructor (e.g., params_file, env, etc.)
         """
@@ -66,17 +75,19 @@ class Vehicle:
         # Cache state indices for fast access
         if state_indices is None:
             self._pos_idx = np.array([0, 1, 2], dtype=np.int32)
-            self._rot_idx = None
-            self._has_rotation = False
+            self._dcm_idx = None
+            self._has_dcm = False
         else:
             self._pos_idx = np.array(state_indices.get('position', [0, 1, 2]), dtype=np.int32)
-            rot = state_indices.get('rotation')
-            if rot is not None:
-                self._rot_idx = np.array(rot) if isinstance(rot, list) else rot
-                self._has_rotation = True
+            dcm = state_indices.get('dcm')
+            if dcm is not None:
+                if len(dcm) != 9:
+                    raise ValueError(f"DCM indices must have exactly 9 elements (row-major 3x3), got {len(dcm)}")
+                self._dcm_idx = np.array(dcm, dtype=np.int32)
+                self._has_dcm = True
             else:
-                self._rot_idx = None
-                self._has_rotation = False
+                self._dcm_idx = None
+                self._has_dcm = False
         
         # Initialize state
         self.state = np.asarray(initial_state).flatten() if initial_state is not None else None
@@ -96,6 +107,8 @@ class Vehicle:
         
         Uses cached indices for fast extraction without creating temporary objects.
         Handles 2D states by setting z=0.
+        For quaternion-based dynamics (SimpleMultirotorQuat), extracts quaternion,
+        converts to Euler angles, and builds DCM for proper rotation.
         """
         # Ensure state is flattened for indexing
         state_flat = self.state.flatten()
@@ -115,55 +128,37 @@ class Vehicle:
                 state_flat[self._pos_idx[2]]
             ], dtype=np.float64)
         
-        # Extract rotation if available
+        # Extract rotation - try multiple methods in order of preference
         rotation = np.eye(3)
-        if self._has_rotation:
-            rot_data = state_flat[self._rot_idx]
-            rot_len = len(rot_data)
-            
-            if rot_len == 9:
-                # DCM - reshape to 3x3
-                rotation = rot_data.reshape(3, 3)
-            elif rot_len == 3:
-                # Euler angles - convert to rotation matrix
-                rotation = self._euler_to_dcm(rot_data[0], rot_data[1], rot_data[2])
+        
+        # Method 1: Check if model has quaternion state (SimpleMultirotorQuat)
+        if hasattr(self.model, 'state_map'):
+            state_map = self.model.state_map
+            if hasattr(state_map, 'quat'):
+                # Extract quaternion [qw, qx, qy, qz]
+                quat = state_flat[state_map.quat]
+                
+                # Convert quaternion to Euler angles (roll, pitch, yaw)
+                roll, pitch, yaw = gmath.quat_to_euler(quat)
+                
+                # Build DCM using ZYX convention (rotation = Rz @ Ry @ Rx)
+                # This matches gncpy's quaternion convention and NED frame
+                Rx = DCM3D(roll, "x")
+                Ry = DCM3D(pitch, "y")
+                Rz = DCM3D(yaw, "z")
+                rotation = Rz @ Ry @ Rx
+        
+        # Method 2: Use DCM indices if provided (for other dynamics models)
+        elif self._has_dcm:
+            # Extract 9 DCM elements and reshape to 3x3 (row-major)
+            dcm_data = state_flat[self._dcm_idx]
+            rotation = dcm_data.reshape(3, 3)
         
         # Update collision object transform
         transform = fcl.Transform(rotation, position)
         self.collision_object.setTransform(transform)
     
-    @staticmethod
-    def _euler_to_dcm(roll: float, pitch: float, yaw: float) -> np.ndarray:
-        """Euler to DCM conversion (ZYX convention).
-        
-        Parameters
-        ----------
-        roll : float
-            Roll angle in radians
-        pitch : float
-            Pitch angle in radians
-        yaw : float
-            Yaw angle in radians
-            
-        Returns
-        -------
-        np.ndarray
-            3 by 3 rotation matrix
-        """
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        
-        # Pre-compute common terms
-        cy_sp = cy * sp
-        sy_sp = sy * sp
-        
-        # Build DCM directly (ZYX convention)
-        return np.array([
-            [cy * cp, cy_sp * sr - sy * cr, cy_sp * cr + sy * sr],
-            [sy * cp, sy_sp * sr + cy * cr, sy_sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr]
-        ], dtype=np.float64)
+
     
     def propagate(
         self, 

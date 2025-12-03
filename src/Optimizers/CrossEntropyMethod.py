@@ -134,50 +134,44 @@ class CrossEntropyMethod(OptimizerBase):
         best_cost = float('inf')
         
         if verbose:
-            print(f"\n=== Cross-Entropy Method Optimization ===")
-            print(f"Decision vector dimension: {dim}")
-            print(f"Population size: {self.population_size}")
-            print(f"Elite samples: {self.num_elites}")
-            print(f"Max iterations: {max_iters}")
+            print(f"\n=== Cross-Entropy Method Optimization ===", flush=True)
+            print(f"Decision vector dimension: {dim}", flush=True)
+            print(f"Population size: {self.population_size}", flush=True)
+            print(f"Elite samples: {self.num_elites}", flush=True)
+            print(f"Max iterations: {max_iters}", flush=True)
         
         import time
         
         # Main CEM loop
         for iteration in range(max_iters):
             if verbose:
-                print(f"\n[CEM] Iteration {iteration+1}/{max_iters} starting...")
+                print(f"\n[CEM] Iteration {iteration+1}/{max_iters} starting...", flush=True)
                 iter_start = time.time()
             
             # Sample population from current distribution
-            if verbose:
-                print(f"[CEM]   Sampling {self.population_size} candidates...")
-                sample_start = time.time()
+            eval_start = time.time()
             samples = self._sample_population(mean, std, lower_bounds, upper_bounds, dim)
-            if verbose:
-                print(f"[CEM]   Sampling done in {time.time()-sample_start:.2f}s")
+            
+            if verbose and iteration == 0:
+                print(f"[CEM] Sampled population shape: {samples.shape}, should be ({self.population_size}, {dim})")
+                print(f"[CEM] Sample[0] shape: {samples[0].shape}, range: [{samples[0].min():.3f}, {samples[0].max():.3f}]")
             
             # Evaluate all samples
-            if verbose:
-                print(f"[CEM]   Evaluating {len(samples)} samples...")
-                eval_start = time.time()
-            
             costs = []
             for idx, sample in enumerate(samples):
-                if verbose and idx > 0 and idx % 50 == 0:
-                    elapsed = time.time() - eval_start
-                    rate = idx / elapsed
-                    remaining = (len(samples) - idx) / rate
-                    print(f"[CEM]     Progress: {idx}/{len(samples)} ({elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining, {rate:.1f} evals/s)")
-                costs.append(controller.evaluate_decision_vector(sample))
+                cost = controller.evaluate_decision_vector(sample)
+                if verbose and iteration == 0 and idx == 0:
+                    print(f"[CEM] First cost type: {type(cost)}, value: {cost}")
+                    if not np.isscalar(cost) and hasattr(cost, 'shape'):
+                        raise ValueError(f"Cost is not scalar! shape: {cost.shape}")
+                costs.append(cost)
             costs = np.array(costs)
             
-            if verbose:
-                eval_time = time.time() - eval_start
-                print(f"[CEM]   Evaluation done in {eval_time:.2f}s ({self.population_size/eval_time:.2f} evals/s)")
+            if verbose and iteration == 0:
+                print(f"[CEM] Costs array shape: {costs.shape}, should be ({self.population_size},)")
+                print(f"[CEM] Costs range: [{costs.min():.1f}, {costs.max():.1f}]")
             
             # Select elite samples (lowest cost)
-            if verbose:
-                print(f"[CEM]   Selecting top {self.num_elites} elites...")
             elite_indices = np.argsort(costs)[:self.num_elites]
             elite_samples = samples[elite_indices]
             elite_costs = costs[elite_indices]
@@ -193,12 +187,8 @@ class CrossEntropyMethod(OptimizerBase):
             
             if verbose:
                 mean_elite_cost = np.mean(elite_costs)
-                std_elite_cost = np.std(elite_costs)
                 iter_time = time.time() - iter_start
-                print(f"[CEM] Iter {iteration+1}/{max_iters} COMPLETE in {iter_time:.2f}s: "
-                      f"Best={best_cost:.4f}, "
-                      f"Elite mean={mean_elite_cost:.4f}±{std_elite_cost:.4f}, "
-                      f"Mean std={np.mean(std):.4f}")
+                print(f"[CEM] Iter {iteration+1}/{max_iters}: Best={best_cost:.1f}, Elite mean={mean_elite_cost:.1f}, Time={iter_time:.1f}s", flush=True)
             
             # Update distribution based on elite samples
             old_mean = mean.copy()
@@ -218,12 +208,12 @@ class CrossEntropyMethod(OptimizerBase):
             mean_change = np.linalg.norm(mean - old_mean)
             if mean_change < self.epsilon:
                 if verbose:
-                    print(f"Converged: mean change {mean_change:.6f} < {self.epsilon}")
+                    print(f"Converged: mean change {mean_change:.6f} < {self.epsilon}", flush=True)
                 break
         
         if verbose:
-            print(f"Optimization complete: best cost = {best_cost:.4f}")
-            print("=" * 50)
+            print(f"Optimization complete: best cost = {best_cost:.4f}", flush=True)
+            print("=" * 50, flush=True)
         
         return best_solution
     

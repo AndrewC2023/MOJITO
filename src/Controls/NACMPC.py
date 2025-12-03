@@ -1,8 +1,12 @@
 import numpy as np
+import numpy as np
+import fcl
 from scipy.interpolate import PchipInterpolator
 from gncpy.dynamics.basic import DynamicsBase
+import gncpy.math as gmath
 from Vehicles.Vehicle import Vehicle
 from Optimizers.OptimizerBase import OptimizerBase, CostFunction
+from Utils.GeometryUtils import DCM3D
 
 """in all these cases we are assuming normalized u values between 0 and 1, the vehicle model will need to scale them appropriately """
 
@@ -125,8 +129,20 @@ class PiecewiseConstantInput(inputFunction):
         keyframeValues = np.asarray(keyframeValues)
         if keyframeValues.ndim == 1:
             # Reshape from flat to (numKeyframes, control_dim)
+            expected_size = self.numKeyframes * self.control_dim
+            if keyframeValues.size != expected_size:
+                raise ValueError(
+                    f"PiecewiseConstantInput: keyframeValues has {keyframeValues.size} elements, "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
         else:
+            if keyframeValues.shape != (self.numKeyframes, self.control_dim):
+                raise ValueError(
+                    f"PiecewiseConstantInput: keyframeValues has shape {keyframeValues.shape}, "
+                    f"but expected ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues
     
     def updateStartAndEndTimes(self, startTime: float, endTime: float):
@@ -215,8 +231,20 @@ class LinearInterpolationInput(inputFunction):
         """
         keyframeValues = np.asarray(keyframeValues)
         if keyframeValues.ndim == 1:
+            expected_size = self.numKeyframes * self.control_dim
+            if keyframeValues.size != expected_size:
+                raise ValueError(
+                    f"LinearInterpolationInput: keyframeValues has {keyframeValues.size} elements, "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
         else:
+            if keyframeValues.shape != (self.numKeyframes, self.control_dim):
+                raise ValueError(
+                    f"LinearInterpolationInput: keyframeValues has shape {keyframeValues.shape}, "
+                    f"but expected ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues
     
     def updateStartAndEndTimes(self, startTime: float, endTime: float):
@@ -321,8 +349,20 @@ class SplineInterpolationInput(inputFunction):
         """
         keyframeValues = np.asarray(keyframeValues)
         if keyframeValues.ndim == 1:
+            expected_size = self.numKeyframes * self.control_dim
+            if keyframeValues.size != expected_size:
+                raise ValueError(
+                    f"SplineInterpolationInput: keyframeValues has {keyframeValues.size} elements, "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
         else:
+            if keyframeValues.shape != (self.numKeyframes, self.control_dim):
+                raise ValueError(
+                    f"SplineInterpolationInput: keyframeValues has shape {keyframeValues.shape}, "
+                    f"but expected ({self.numKeyframes}, {self.control_dim})."
+                )
             self.keyframeValues = keyframeValues
         
         # Construct PCHIP interpolators for each control dimension
@@ -414,6 +454,16 @@ class NACMPC:
             if hasattr(self, key):
                 setattr(self, key, value)
         
+        # CRITICAL: Validate that numControlKeyframes matches inputFunction.numKeyframes
+        if hasattr(self.inputFunction, 'numKeyframes'):
+            if self.numControlKeyframes != self.inputFunction.numKeyframes:
+                raise ValueError(
+                    f"NACMPC numControlKeyframes ({self.numControlKeyframes}) MUST match "
+                    f"inputFunction.numKeyframes ({self.inputFunction.numKeyframes})! "
+                    f"Decision vector will have {self.numControlKeyframes * self.control_dim} values, "
+                    f"but inputFunction expects {self.inputFunction.numKeyframes * self.control_dim} values."
+                )
+        
         if self.debug:
             print(f"[NACMPC.__init__] control_dim={self.control_dim}, numKeyframes={self.numControlKeyframes}, physicsSteps={self.physicsSteps}")
 
@@ -454,16 +504,12 @@ class NACMPC:
         The exact interpretation of keyframes is delegated to ``inputFunction``.
         """
         self.eval_count += 1
-        verbose = self.debug and (self.eval_count <= 2)  # Only print first 2 evaluations
-        
         decision_vector = np.asarray(decision_vector, dtype=float)
         
-        if verbose:
-            print(f"\n[NACMPC.evaluate_decision_vector] #{self.eval_count}")
-            print(f"  decision_vector.shape={decision_vector.shape}")
-            print(f"  decision_vector range: [{decision_vector.min():.4f}, {decision_vector.max():.4f}]")
-        elif self.debug and self.eval_count % 20 == 0:
-            print(f"[NACMPC] Evaluation #{self.eval_count}...")
+        if self.eval_count == 1:
+            print(f"\n[NACMPC DIMENSION VALIDATION]")
+            print(f"  decision_vector shape: {decision_vector.shape}")
+            print(f"  expected: (1 + {self.numControlKeyframes} * {self.control_dim},) = ({1 + self.numControlKeyframes * self.control_dim},)")
 
         # decode horizon and keyframes
         if self.dynamicHorizon:
@@ -471,29 +517,26 @@ class NACMPC:
             # clamp to allowed range
             horizon = max(self.minHorizon, min(self.maxHorizon, horizon))
             keyframes = decision_vector[1:]
-            if verbose:
-                print(f"  Dynamic horizon: {horizon:.3f}s (raw: {decision_vector[0]:.3f})")
-                print(f"  keyframes.shape={keyframes.shape}, range=[{keyframes.min():.4f}, {keyframes.max():.4f}]")
+            
+            if self.eval_count == 1:
+                print(f"  horizon: {horizon}")
+                print(f"  keyframes shape: {keyframes.shape}, expected: ({self.numControlKeyframes * self.control_dim},)")
         else:
             horizon = self.maxHorizon
             keyframes = decision_vector
-            if verbose:
-                print(f"  Fixed horizon: {horizon:.3f}s, keyframes.shape={keyframes.shape}")
+            
+            if self.eval_count == 1:
+                print(f"  Fixed horizon: {horizon}")
+                print(f"  keyframes shape: {keyframes.shape}")
 
         # set up time discretization
         total_steps = self.physicsSteps
         dt = horizon / total_steps
-        
-        if verbose:
-            print(f"  Rollout: {total_steps} steps, dt={dt:.6f}s")
 
         # configure input function
         self.inputFunction.updateTimeStep(dt)
         self.inputFunction.updateStartAndEndTimes(0.0, horizon)
         self.inputFunction.updateKeyFrameValues(keyframes)
-        
-        if verbose:
-            print(f"  Input function configured: {type(self.inputFunction).__name__}")
 
         # roll out dynamics from x0
         # make a copy of the vehicle state so optimization is side-effect free
@@ -503,22 +546,24 @@ class NACMPC:
         else:
             self.vehicle.set_state(self._x0)
         
-        if verbose:
-            print(f"  Initial state set: {self._x0[:3]} (showing pos only)")
+        if self.eval_count == 1:
+            print(f"  Initial state (_x0) shape: {self._x0.shape}")
+            print(f"  Vehicle state after set_state shape: {self.vehicle.state.shape}")
 
         total_cost = 0.0
         t = 0.0
         for step in range(total_steps):
             u = self.inputFunction.calculateInput(t)
             
-            if verbose and (step == 0 or step == total_steps - 1):
-                print(f"  Step {step}/{total_steps}: t={t:.4f}s, u={u}")
+            if self.eval_count == 1 and step == 0:
+                print(f"  Step 0 control u shape: {u.shape}, values: {u}")
             
             state = self.vehicle.propagate(dt, u=u)
+            # Note: Vehicle.propagate() internally updates collision object with both position AND rotation
             
-            if verbose and (step == 0 or step == total_steps - 1):
-                pos = state[:3] if len(state) >= 3 else state
-                print(f"    -> pos={pos}")
+            if self.eval_count == 1 and step == 0:
+                print(f"  Step 0 state after propagate shape: {state.shape}")
+                print(f"  Step 0 NED position: {state[4:7]}")
             
             # Check if this is the terminal step
             is_terminal = (step == total_steps - 1)
@@ -529,9 +574,6 @@ class NACMPC:
                 self.vehicle.collision_object, t
             )
             
-            if verbose and (step == 0 or step == total_steps - 1):
-                print(f"    -> collision: {collision_result.has_collision}, dist={collision_result.min_obstacle_distance:.4f}")
-            
             instant_cost = self.costFunction.evaluate(
                 state=state,
                 control=u,
@@ -541,14 +583,8 @@ class NACMPC:
                 **self.cost_context,
             )
             
-            if verbose and (step == 0 or step == total_steps - 1):
-                print(f"    -> instant_cost={instant_cost:.4f}")
-            
             total_cost += float(instant_cost)
             t += dt
-        
-        if verbose:
-            print(f"  ROLLOUT COMPLETE: total_cost={total_cost:.4f}\n")
 
         # restore original vehicle state
         if original_state is not None:

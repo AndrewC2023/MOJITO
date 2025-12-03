@@ -22,6 +22,8 @@ sys.path.append(str(root_dir / "dependencies" / "gncpy" / "src"))
 from gncpy.dynamics.aircraft.simple_multirotor_quat import SimpleMultirotorQuat, v_smap_quat
 from gncpy.dynamics.aircraft.simple_multirotor import Effector
 import gncpy.math as gmath
+import fcl
+from Utils.GeometryUtils import DCM3D  # type: ignore
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D # type: ignore
 from ConfigurationSpace.Obstacles import StaticObstacle # type: ignore
 from Vehicles.Vehicle import Vehicle # type: ignore
@@ -30,14 +32,16 @@ from Optimizers.OptimizerBase import OptimizerBase, CostFunction # type: ignore
 from Optimizers.CrossEntropyMethod import CrossEntropyMethod # type: ignore
 
 # configuration setup (Note we are in NED frame - this makes dynamics frame conversion easier for me)
-dim = [0, 10, -2.5, 2.5, 0, -5]
+# NED: X=North, Y=East, Z=Down (negative is up)
+# zMin should be more negative (deeper/lower), zMax less negative (higher/surface)
+dim = [0, 10, -2.5, 2.5, -5, 0]  # xMin, xMax, yMin, yMax, zMin, zMax
 
 GRAVITY = np.array([0,0,9.81])  # acceleration vector in NED frame
 
 # construct the dynamics class
 config_file = Path(__file__).parent / "SmallQuadrotor.yaml"
 QuadDynamics = SimpleMultirotorQuat(str(config_file), effector=None)
-
+print("quad constructed")
 # Initialize vehicle with proper NED setup
 INIT_POS = np.array([1.5, -1.25, -1.5])  # NED (m)
 INIT_VEL = np.array([0.0, 0.0, 0.0])  # body frame (m/s)
@@ -77,12 +81,15 @@ x_goal[v_smap_quat.body_rot_rate] = np.zeros(3)  # zero rates at goal
 print(f"\nGoal position: {goal_position}")
 print(f"Goal state shape: {x_goal.shape}")
 
-# Construct vehicle
+# Construct vehicle with correct state indices for SimpleMultirotorQuat
+# Vehicle class expects position only; we'll handle rotation externally
 vehicle = Vehicle(
     dynamics_class=QuadDynamics,
     geometry=vehicle_geometry,
     initial_state=x0,
-    state_indices={'position': [0, 1, 2]}  # NED position in state (v_smap_quat.ned_pos)
+    state_indices={
+        'position': [4, 5, 6]  # v_smap_quat.ned_pos
+    }
 )
 
 """Set up configuration space with a vertical wall containing a narrow slit.
@@ -112,25 +119,26 @@ total_z = abs(z_max - z_min)
 lower_z_height = 0.5 * total_z - 0.5 * slit_height
 upper_z_height = 0.5 * total_z - 0.5 * slit_height
 
+# OBSTACLES COMMENTED OUT FOR DEBUGGING - just fly from start to goal without obstacles
 # Left side of slit (negative Y side) - full height wall
-left_geom = fcl.Box(wall_thickness, upper_y_height, total_z)
-left_tf = fcl.Transform(np.eye(3), [x_center, dim[2] + 0.5 * upper_y_height, z_mid])
-config_space.add_obstacle(StaticObstacle(left_geom, left_tf))
+# left_geom = fcl.Box(wall_thickness, upper_y_height, total_z)
+# left_tf = fcl.Transform(np.eye(3), [x_center, dim[2] + 0.5 * upper_y_height, z_mid])
+# config_space.add_obstacle(StaticObstacle(left_geom, left_tf))
 
 # Right side of slit (positive Y side) - full height wall
-right_geom = fcl.Box(wall_thickness, upper_y_height, total_z)
-right_tf = fcl.Transform(np.eye(3), [x_center, dim[3] - 0.5 * upper_y_height, z_mid])
-config_space.add_obstacle(StaticObstacle(right_geom, right_tf))
+# right_geom = fcl.Box(wall_thickness, upper_y_height, total_z)
+# right_tf = fcl.Transform(np.eye(3), [x_center, dim[3] - 0.5 * upper_y_height, z_mid])
+# config_space.add_obstacle(StaticObstacle(right_geom, right_tf))
 
 # Bottom of slit (across slit width at lower Z region)
-bottom_geom = fcl.Box(wall_thickness, slit_width, lower_z_height)
-bottom_tf = fcl.Transform(np.eye(3), [x_center, y_mid, z_mid - 0.5 * slit_height - 0.5 * lower_z_height])
-config_space.add_obstacle(StaticObstacle(bottom_geom, bottom_tf))
+# bottom_geom = fcl.Box(wall_thickness, slit_width, lower_z_height)
+# bottom_tf = fcl.Transform(np.eye(3), [x_center, y_mid, z_mid - 0.5 * slit_height - 0.5 * lower_z_height])
+# config_space.add_obstacle(StaticObstacle(bottom_geom, bottom_tf))
 
 # Top of slit (across slit width at upper Z region)
-top_geom = fcl.Box(wall_thickness, slit_width, upper_z_height)
-top_tf = fcl.Transform(np.eye(3), [x_center, y_mid, z_mid + 0.5 * slit_height + 0.5 * upper_z_height])
-config_space.add_obstacle(StaticObstacle(top_geom, top_tf))
+# top_geom = fcl.Box(wall_thickness, slit_width, upper_z_height)
+# top_tf = fcl.Transform(np.eye(3), [x_center, y_mid, z_mid + 0.5 * slit_height + 0.5 * upper_z_height])
+# config_space.add_obstacle(StaticObstacle(top_geom, top_tf))
 
 # Define cost function class for the optimizer
 class QuadSlitCostFunction(CostFunction):
@@ -178,7 +186,8 @@ class QuadSlitCostFunction(CostFunction):
                  proximity_weight: float = 10.0,
                  proximity_threshold: float = 0.5,
                  goal_weight: float = 50.0,
-                 terminal_goal_weight: float = 500.0):
+                 terminal_goal_weight: float = 500.0,
+                 debug: bool = False):
         super().__init__()
         self.goal_state = goal_state
         self.goal_position = goal_position
@@ -190,104 +199,157 @@ class QuadSlitCostFunction(CostFunction):
         self.proximity_threshold = proximity_threshold
         self.goal_weight = goal_weight
         self.terminal_goal_weight = terminal_goal_weight
+        self.debug = debug
+        self.eval_count = 0
 
     def evaluate(self, state: np.ndarray, control: np.ndarray, dt: float, **kwargs) -> float:
-        """Evaluate instantaneous cost for quadcopter navigation.
+        """Evaluate cost for a single state-control pair.
         
         Parameters
         ----------
         state : np.ndarray
-            Current state [pos, vel, euler, rates] (12-DOF)
+            Vehicle state vector (48-DOF from SimpleMultirotorQuat)
         control : np.ndarray
-            Control inputs (normalized 0-1 as per project convention)
+            Control input vector
         dt : float
-            Time step duration
+            Time step
         **kwargs : dict
-            Must include:
-            - collision_result: CollisionQueryResult from ConfigSpace3D.query_collision_detailed()
-            - is_terminal: bool indicating if this is the final step
+            Additional arguments (collision_result, is_terminal, goal_state, etc.)
             
         Returns
         -------
         float
-            Total instantaneous cost
+            Total cost for this state-control pair
         """
-        cost = 0.0
-        
-        # Extract collision data from kwargs
-        collision_result = kwargs.get('collision_result', None)
+        self.eval_count += 1
         is_terminal = kwargs.get('is_terminal', False)
+        collision_result = kwargs.get('collision_result', None)
         
-        if collision_result is None:
-            raise ValueError("collision_result must be provided in kwargs")
+        # VALIDATION: Check input dimensions
+        if self.eval_count == 1:
+            print(f"\n[COST FUNCTION DIMENSION VALIDATION]")
+            print(f"  state type: {type(state)}, shape: {state.shape}, dtype: {state.dtype}")
+            print(f"  control type: {type(control)}, shape: {control.shape}, dtype: {control.dtype}")
+            print(f"  goal_state shape: {self.goal_state.shape}")
+            print(f"  Q matrix shape: {self.Q.shape}")
+            print(f"  R matrix shape: {self.R.shape}")
         
-        # Extract 12-DOF reduced state from full 48-DOF SimpleMultirotorQuat state
-        # [ned_pos(3), body_vel(3), euler(3), body_rates(3)]
-        ned_pos = state[v_smap_quat.ned_pos]
-        body_vel = state[v_smap_quat.body_vel]
-        quat = state[v_smap_quat.quat]
-        body_rates = state[v_smap_quat.body_rot_rate]
-        
-        # Convert quaternion to Euler angles for cost evaluation
+        # Extract 12-DOF state we care about: [pos(3), vel(3), euler(3), rates(3)]
+        # Position: NED position
+        pos = state[v_smap_quat.ned_pos].flatten()  # indices [4,5,6], FLATTEN to 1D
+        # Velocity: body frame velocity
+        vel = state[v_smap_quat.body_vel].flatten()  # indices [17,18,19], FLATTEN to 1D
+        # Attitude: convert quaternion to Euler angles
+        quat = state[v_smap_quat.quat].flatten()  # indices [13,14,15,16], FLATTEN to 1D
         roll, pitch, yaw = gmath.quat_to_euler(quat)
+        euler = np.array([roll, pitch, yaw]).flatten()
+        # Body rates
+        rates = state[v_smap_quat.body_rot_rate].flatten()  # indices [23,24,25], FLATTEN to 1D
         
-        # Build 12-DOF reduced state vector - FLATTEN to 1D
-        state_12dof = np.concatenate([ned_pos, body_vel, [roll, pitch, yaw], body_rates]).flatten()
+        if self.eval_count == 1:
+            print(f"  Extracted components:")
+            print(f"    pos shape: {pos.shape}, values: {pos}")
+            print(f"    vel shape: {vel.shape}, values: {vel}")
+            print(f"    quat shape: {quat.shape}, values: {quat}")
+            print(f"    euler shape: {euler.shape}, values: {euler}")
+            print(f"    rates shape: {rates.shape}, values: {rates}")
         
-        # Extract 12-DOF goal state from full goal state
-        goal_ned_pos = self.goal_state[v_smap_quat.ned_pos]
-        goal_body_vel = self.goal_state[v_smap_quat.body_vel]
-        goal_quat = self.goal_state[v_smap_quat.quat]
-        goal_body_rates = self.goal_state[v_smap_quat.body_rot_rate]
+        # Build 12-DOF state vector for cost computation
+        state_12dof = np.concatenate([pos, vel, euler, rates])
+        
+        if self.eval_count == 1:
+            print(f"  state_12dof shape: {state_12dof.shape}, should be (12,)")
+            if state_12dof.shape != (12,):
+                raise ValueError(f"state_12dof has wrong shape: {state_12dof.shape}, expected (12,)")
+        
+        # Extract same 12-DOF from goal state
+        goal_pos = self.goal_state[v_smap_quat.ned_pos].flatten()
+        goal_vel = self.goal_state[v_smap_quat.body_vel].flatten()
+        goal_quat = self.goal_state[v_smap_quat.quat].flatten()
         goal_roll, goal_pitch, goal_yaw = gmath.quat_to_euler(goal_quat)
-        goal_12dof = np.concatenate([goal_ned_pos, goal_body_vel, [goal_roll, goal_pitch, goal_yaw], goal_body_rates]).flatten()
+        goal_euler = np.array([goal_roll, goal_pitch, goal_yaw]).flatten()
+        goal_rates = self.goal_state[v_smap_quat.body_rot_rate].flatten()
+        goal_12dof = np.concatenate([goal_pos, goal_vel, goal_euler, goal_rates])
         
-        # 1. LQR-style state penalty: (x - x_goal)^T Q (x - x_goal)
+        if self.eval_count == 1:
+            print(f"  goal_12dof shape: {goal_12dof.shape}, should be (12,)")
+            if goal_12dof.shape != (12,):
+                raise ValueError(f"goal_12dof has wrong shape: {goal_12dof.shape}, expected (12,)")
+        
+        # State error cost (LQR-style quadratic penalty on 12-DOF)
         state_error = state_12dof - goal_12dof
-        state_cost = float(state_error.T @ self.Q @ state_error)
-        cost += state_cost
         
-        # 2. LQR-style control penalty: u^T R u
+        if self.eval_count == 1:
+            print(f"  state_error shape: {state_error.shape}, should be (12,)")
+            print(f"  Q @ state_error shape: {(self.Q @ state_error).shape}")
+            print(f"  Computing state_cost = state_error.T @ Q @ state_error")
+        
+        state_cost = np.dot(state_error, self.Q @ state_error)
+        
+        if self.eval_count == 1:
+            print(f"  state_cost type: {type(state_cost)}, value: {state_cost}")
+            if not np.isscalar(state_cost) and hasattr(state_cost, 'shape'):
+                print(f"  WARNING: state_cost is not scalar! shape: {state_cost.shape}")
+        
+        # Control effort cost
         control_flat = control.flatten()
-        control_cost = float(control_flat.T @ self.R @ control_flat)
-        cost += control_cost
         
-        # 3. Collision penalty (strongly penalize based on penetration depth)
-        # Use exponential scaling so deeper collisions are much more expensive
-        if collision_result.has_collision and collision_result.num_collisions > 0:
-            # Exponential penalty: grows with penetration depth (scaled by factor of 3)
-            collision_cost = float(self.collision_weight * (np.exp(collision_result.total_penetration_depth * 3.0) - 1.0))
-            cost += collision_cost
+        if self.eval_count == 1:
+            print(f"  control original shape: {control.shape}")
+            print(f"  control_flat shape: {control_flat.shape}, should be (4,)")
+            print(f"  R @ control_flat shape: {(self.R @ control_flat).shape}")
         
-        # 4. Boundary violation penalty (very severe - we never want to leave bounds)
-        if collision_result.is_out_of_bounds:
-            cost += float(self.boundary_weight)
+        control_cost = np.dot(control_flat, self.R @ control_flat)
         
-        # 5. Proximity penalty (logarithmic barrier to encourage safe distances)
-        # Only apply if NOT already in collision (collision penalty dominates)
-        # Log-law provides smooth gradient far away, steep gradient close to obstacles
-        # Allows slit navigation while maintaining safe clearance
-        if not collision_result.has_collision and collision_result.min_obstacle_distance < self.proximity_threshold:
-            # Prevent log(0) or log(negative) - clamp minimum distance
-            safe_distance = max(collision_result.min_obstacle_distance, 0.01)
-            # Log barrier: -log(d) grows rapidly as d -> 0
-            proximity_cost = float(self.proximity_weight * (-np.log(safe_distance / self.proximity_threshold)))
-            cost += proximity_cost
+        if self.eval_count == 1:
+            print(f"  control_cost type: {type(control_cost)}, value: {control_cost}")
+            if not np.isscalar(control_cost) and hasattr(control_cost, 'shape'):
+                print(f"  WARNING: control_cost is not scalar! shape: {control_cost.shape}")
         
-        # 6. Goal position tracking penalty
-        current_position = ned_pos  # Use extracted NED position
-        goal_distance = float(np.linalg.norm(current_position - self.goal_position))
-        goal_cost = float(self.goal_weight * goal_distance ** 2)
-        cost += goal_cost
+        # Collision penalty (exponential in penetration depth)
+        collision_cost = 0.0
+        if collision_result and collision_result.has_collision:
+            penetration = collision_result.total_penetration_depth
+            collision_cost = self.collision_weight * (np.exp(penetration) - 1.0)
         
-        # 7. Terminal cost (large penalty if final state is far from goal)
+        # Boundary violation penalty (very high to absolutely avoid)
+        boundary_cost = 0.0
+        if collision_result and collision_result.is_out_of_bounds:
+            boundary_cost = self.boundary_weight
+        
+        # Proximity penalty (log barrier to stay away from obstacles)
+        proximity_cost = 0.0
+        if collision_result and not collision_result.has_collision:
+            dist = collision_result.min_obstacle_distance
+            if dist < self.proximity_threshold:
+                # Log barrier: cost grows as we approach threshold
+                proximity_cost = -self.proximity_weight * np.log(dist / self.proximity_threshold)
+        
+        # Goal tracking cost (distance to goal position)
+        goal_dist = np.linalg.norm(pos - self.goal_position)
+        goal_cost = self.goal_weight * goal_dist
+        
+        # Terminal cost (large penalty if far from goal at end)
+        terminal_cost = 0.0
         if is_terminal:
-            terminal_cost = float(self.terminal_goal_weight * goal_distance ** 2)
-            cost += terminal_cost
+            terminal_cost = self.terminal_goal_weight * goal_dist
         
-        # Scale by time step for time-consistent cost accumulation
-        # This ensures the total cost is independent of dt choice
-        return cost * dt
+        # Total cost
+        total = state_cost + control_cost + collision_cost + boundary_cost + proximity_cost + goal_cost + terminal_cost
+        
+        # Debug output for occasional evaluations
+        if self.debug:
+            # Print every 50 evaluations or if terminal
+            if is_terminal or (self.eval_count % 100 == 0):
+                obst_dist = collision_result.min_obstacle_distance if collision_result else float('inf')
+                print(f"\n[Cost eval #{self.eval_count}]{' TERMINAL' if is_terminal else ''}", flush=True)
+                print(f"  Pos: {pos.T[0]}, Goal dist: {goal_dist:.2f}m, Obst dist: {obst_dist:.2f}m", flush=True)
+                print(f"  Costs: state={state_cost:.1f}, ctrl={control_cost:.2f}, "
+                      f"coll={collision_cost:.1f}, bound={boundary_cost:.1f}, "
+                      f"prox={proximity_cost:.1f}, goal={goal_cost:.1f}, term={terminal_cost:.1f}", flush=True)
+                print(f"  Total: {total:.1f}", flush=True)
+        
+        return total
 
 # Cost function setup
 # State: [x, y, z, vx, vy, vz, roll, pitch, yaw, p, q, r] (12-DOF)
@@ -316,7 +378,8 @@ cost_function = QuadSlitCostFunction(
     proximity_weight=2.0,         # Light weight for log barrier (log grows fast near obstacles)
     proximity_threshold=0.3,      # Start penalizing within 0.3m of obstacles
     goal_weight=10.0,             # Light penalty for distance from goal during trajectory
-    terminal_goal_weight=5000.0   # Dominant terminal cost - reaching goal is most important at end
+    terminal_goal_weight=5000.0,  # Dominant terminal cost - reaching goal is most important at end
+    debug=True                     # Enable cost function debug output
 )
 
 

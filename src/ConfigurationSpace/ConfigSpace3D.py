@@ -132,7 +132,10 @@ class ConfigurationSpace3D:
                 self.zMin = dimensions[4]
                 self.zMax = dimensions[5]
             else:
-                raise ValueError("Dimensions must have at least 6 values: [xMin, xMax, yMin, yMax, zMin, zMax]")
+                raise ValueError(f"Dimensions must have at least 6 values, got {len(dimensions)}")
+        
+        # Validate that min < max for all dimensions
+        self._validate_dimensions()
         
         # Initialize obstacle list
         self.obstacles: List[Obstacle] = []
@@ -156,6 +159,19 @@ class ConfigurationSpace3D:
         boundary_geom = fcl.Box(size_x, size_y, size_z)
         boundary_transform = fcl.Transform(np.eye(3), center)
         self.boundary_collision_object = fcl.CollisionObject(boundary_geom, boundary_transform)
+    
+    def _validate_dimensions(self):
+        """Validate that min < max for all dimensions.
+        
+        Raises:
+            ValueError: If any min value is >= its corresponding max value
+        """
+        if self.xMin >= self.xMax:
+            raise ValueError(f"xMin ({self.xMin}) must be less than xMax ({self.xMax})")
+        if self.yMin >= self.yMax:
+            raise ValueError(f"yMin ({self.yMin}) must be less than yMax ({self.yMax})")
+        if self.zMin >= self.zMax:
+            raise ValueError(f"zMin ({self.zMin}) must be less than zMax ({self.zMax})")
     
     def _create_boundary_faces(self):
         """Create thin boundary face collision objects for efficient boundary checking.
