@@ -1,13 +1,17 @@
 import numpy as np
-from typing import List, Dict, NamedTuple
+from typing import List, Dict, NamedTuple, Optional, Tuple, Union
 import sys
 from pathlib import Path
 import fcl
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import matplotlib.patches as mpatches
 
 # Add parent directory to path to allow imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from Utils.GeometryUtils import Box3D, PointXYZ
+from Utils.GeometryUtils import PointXYZ
 from ConfigurationSpace.Obstacles import Obstacle, StaticObstacle, SimpleMovingObstacle
 
 
@@ -81,7 +85,7 @@ class ConfigurationSpace3D:
     
     Manages a bounded 3D space with obstacles represented as Obstacle objects.
     Provides methods to add/remove obstacles and check for collisions using FCL.
-    Methods accept both fcl.CollisionObject and Box3D (for backward compatibility).
+    All methods accept fcl.CollisionObject for collision and distance queries.
     """
     
     def __init__(self, *args, **kwargs):
@@ -133,8 +137,9 @@ class ConfigurationSpace3D:
         # Initialize obstacle list
         self.obstacles: List[Obstacle] = []
         
-        # Create boundary box for the configuration space
+        # Create boundary box and boundary faces for the configuration space
         self._update_boundary_box()
+        self._create_boundary_faces()
     
     def _update_boundary_box(self):
         """Update the boundary box representing the field bounds."""
@@ -151,6 +156,48 @@ class ConfigurationSpace3D:
         boundary_geom = fcl.Box(size_x, size_y, size_z)
         boundary_transform = fcl.Transform(np.eye(3), center)
         self.boundary_collision_object = fcl.CollisionObject(boundary_geom, boundary_transform)
+    
+    def _create_boundary_faces(self):
+        """Create thin boundary face collision objects for efficient boundary checking.
+        
+        Creates 6 thin box planes positioned just outside the bounds. These are reused
+        for all boundary checks instead of being reconstructed each time.
+        """
+        epsilon = 0.01  # Thin plane thickness
+        
+        # Create collision objects for each boundary face
+        self._boundary_faces = [
+            # X min face (left wall)
+            fcl.CollisionObject(
+                fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+                fcl.Transform(np.eye(3), [self.xMin - epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])
+            ),
+            # X max face (right wall)
+            fcl.CollisionObject(
+                fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
+                fcl.Transform(np.eye(3), [self.xMax + epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])
+            ),
+            # Y min face (back wall)
+            fcl.CollisionObject(
+                fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+                fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMin - epsilon/2, (self.zMin + self.zMax)/2])
+            ),
+            # Y max face (front wall)
+            fcl.CollisionObject(
+                fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
+                fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMax + epsilon/2, (self.zMin + self.zMax)/2])
+            ),
+            # Z min face (bottom wall)
+            fcl.CollisionObject(
+                fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+                fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMin - epsilon/2])
+            ),
+            # Z max face (top wall)
+            fcl.CollisionObject(
+                fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
+                fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMax + epsilon/2])
+            ),
+        ]
     
     def reconfigure(self, dimensions: List[float]):
         """
@@ -169,6 +216,7 @@ class ConfigurationSpace3D:
         self.zMin = dimensions[4]
         self.zMax = dimensions[5]
         self._update_boundary_box()
+        self._create_boundary_faces()
         self.obstacles.clear()
     
     def add_obstacle(self, obstacle: Obstacle):
@@ -218,27 +266,6 @@ class ConfigurationSpace3D:
         """Remove all obstacles from the configuration space."""
         self.obstacles.clear()
     
-    @staticmethod
-    def _to_collision_object(obj):
-        """
-        Convert input to fcl.CollisionObject.
-        
-        Args:
-            obj: Either fcl.CollisionObject or Box3D object
-            
-        Returns:
-            fcl.CollisionObject
-            
-        Raises:
-            TypeError: If obj is neither fcl.CollisionObject nor Box3D
-        """
-        if isinstance(obj, fcl.CollisionObject):
-            return obj
-        elif isinstance(obj, Box3D):
-            return obj.collision_object
-        else:
-            raise TypeError(f"Expected fcl.CollisionObject or Box3D, got {type(obj)}")
-    
     def is_point_in_bounds(self, point) -> bool:
         """
         Check if a point is within the configuration space bounds.
@@ -263,65 +290,33 @@ class ConfigurationSpace3D:
         Check if an object is entirely within the configuration space bounds.
         
         Uses FCL to check if the object is fully contained within the boundary box.
-        We create 6 boundary planes (walls) and check that the object doesn't
-        collide with the "outside" of any wall.
+        First checks if center is in bounds (fast rejection), then uses FCL collision
+        with boundary faces to verify object doesn't extend outside.
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to check
+            obj: fcl.CollisionObject to check
             
         Returns:
             bool: True if object is entirely within bounds, False otherwise
         """
-        collision_obj = self._to_collision_object(obj)
-        
-        # Check collision with each boundary wall from the outside
-        # If we collide with a wall from outside, we're out of bounds
-        request = fcl.CollisionRequest()
-        result = fcl.CollisionResult()
-        
-        # Get object position to determine which walls to check
-        transform = collision_obj.getTransform()
+        # Quick check: is center point in bounds?
+        transform = obj.getTransform()
         pos = transform.getTranslation()
         cx, cy, cz = pos[0], pos[1], pos[2]
         
-        # Simple and efficient: check if center point is in bounds
-        # Then use distance to boundaries to verify object doesn't extend outside
+        # If center is out of bounds, object is definitely out of bounds
         if not (self.xMin <= cx <= self.xMax and
                 self.yMin <= cy <= self.yMax and
                 self.zMin <= cz <= self.zMax):
             return False
         
-        # Use distance computation to check clearance from each boundary
-        # Create thin box planes for each boundary face
-        epsilon = 0.01  # Thin plane thickness
+        # Center is in bounds, now check if object extends outside boundaries
+        # Reuse single request object for all checks (small optimization)
+        request = fcl.CollisionRequest()
         
-        # Check each boundary face
-        boundary_faces = [
-            # X min face (left wall)
-            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [self.xMin - epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
-            # X max face (right wall)
-            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [self.xMax + epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
-            # Y min face (back wall)
-            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMin - epsilon/2, (self.zMin + self.zMax)/2])),
-            # Y max face (front wall)
-            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMax + epsilon/2, (self.zMin + self.zMax)/2])),
-            # Z min face (bottom wall)
-            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMin - epsilon/2])),
-            # Z max face (top wall)
-            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMax + epsilon/2])),
-        ]
-        
-        # Check if object collides with any external boundary face
-        for geom, transform in boundary_faces:
-            wall = fcl.CollisionObject(geom, transform)
-            result = fcl.CollisionResult()  # Create fresh result for each check
-            ret = fcl.collide(collision_obj, wall, request, result)
+        for wall in self._boundary_faces:
+            result = fcl.CollisionResult()
+            ret = fcl.collide(obj, wall, request, result)
             if ret > 0:  # Collision with boundary wall means out of bounds
                 return False
         
@@ -332,14 +327,12 @@ class ConfigurationSpace3D:
         Check if an object collides with field boundaries or any obstacles at time t.
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to check for collision
+            obj: fcl.CollisionObject to check for collision
             t: Time at which to check collision (default: 0.0)
             
         Returns:
             bool: True if collision detected, False otherwise
         """
-        collision_obj = self._to_collision_object(obj)
-        
         # Check if object is out of bounds
         if not self.is_in_bounds(obj):
             return True
@@ -349,12 +342,13 @@ class ConfigurationSpace3D:
             return False
         
         # Check collision with all obstacles at time t
-        request = fcl.CollisionRequest()
-        result = fcl.CollisionResult()
+        # Reuse request and result objects for efficiency
+        request = fcl.CollisionRequest(enable_contact=False)  # Disable contact computation for speed
         
         for obstacle in self.obstacles:
+            result = fcl.CollisionResult()
             obstacle_collision_obj = obstacle.get_collision_object(t)
-            ret = fcl.collide(collision_obj, obstacle_collision_obj, request, result)
+            ret = fcl.collide(obj, obstacle_collision_obj, request, result)
             if ret > 0:  # Collision detected
                 return True
         
@@ -365,20 +359,23 @@ class ConfigurationSpace3D:
         Check if an object collides with any obstacles at time t (ignores boundaries).
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to check for collision
+            obj: fcl.CollisionObject to check for collision
             t: Time at which to check collision (default: 0.0)
             
         Returns:
             bool: True if collision with obstacle detected, False otherwise
         """
-        collision_obj = self._to_collision_object(obj)
+        # Early exit if no obstacles
+        if not self.obstacles:
+            return False
         
-        request = fcl.CollisionRequest()
-        result = fcl.CollisionResult()
+        # Reuse request and result objects for efficiency
+        request = fcl.CollisionRequest(enable_contact=False)  # Disable contact computation for speed
         
         for obstacle in self.obstacles:
+            result = fcl.CollisionResult()
             obstacle_collision_obj = obstacle.get_collision_object(t)
-            ret = fcl.collide(collision_obj, obstacle_collision_obj, request, result)
+            ret = fcl.collide(obj, obstacle_collision_obj, request, result)
             if ret > 0:  # Collision detected
                 return True
         return False
@@ -388,7 +385,7 @@ class ConfigurationSpace3D:
         Get the distance to the nearest obstacle at time t.
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to check distance from
+            obj: fcl.CollisionObject to check distance from
             t: Time at which to check distance (default: 0.0)
             
         Returns:
@@ -397,15 +394,14 @@ class ConfigurationSpace3D:
         if not self.obstacles:
             return float('inf')
         
-        collision_obj = self._to_collision_object(obj)
-        
         min_distance = float('inf')
-        request = fcl.DistanceRequest()
-        result = fcl.DistanceResult()
+        # Reuse request and result objects for efficiency
+        request = fcl.DistanceRequest(enable_nearest_points=False)  # Disable nearest points for speed
         
         for obstacle in self.obstacles:
+            result = fcl.DistanceResult()
             obstacle_collision_obj = obstacle.get_collision_object(t)
-            fcl.distance(collision_obj, obstacle_collision_obj, request, result)
+            fcl.distance(obj, obstacle_collision_obj, request, result)
             distance = result.min_distance
             
             # Early exit if already in collision
@@ -423,45 +419,21 @@ class ConfigurationSpace3D:
         Uses FCL distance computation against each boundary face.
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to check distance from
+            obj: fcl.CollisionObject to check distance from
             
         Returns:
             float: Minimum distance to nearest boundary (negative if penetrating/outside bounds)
         """
-        collision_obj = self._to_collision_object(obj)
-        
-        # Create thin box planes for each boundary face
-        epsilon = 0.01  # Thin plane thickness
-        
-        boundary_faces = [
-            # X min face (left wall)
-            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [self.xMin - epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
-            # X max face (right wall)
-            (fcl.Box(epsilon, self.yMax - self.yMin, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [self.xMax + epsilon/2, (self.yMin + self.yMax)/2, (self.zMin + self.zMax)/2])),
-            # Y min face (back wall)
-            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMin - epsilon/2, (self.zMin + self.zMax)/2])),
-            # Y max face (front wall)
-            (fcl.Box(self.xMax - self.xMin, epsilon, self.zMax - self.zMin),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, self.yMax + epsilon/2, (self.zMin + self.zMax)/2])),
-            # Z min face (bottom wall)
-            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMin - epsilon/2])),
-            # Z max face (top wall)
-            (fcl.Box(self.xMax - self.xMin, self.yMax - self.yMin, epsilon),
-             fcl.Transform(np.eye(3), [(self.xMin + self.xMax)/2, (self.yMin + self.yMax)/2, self.zMax + epsilon/2])),
-        ]
-        
-        # Find minimum distance to any boundary face
+        # Find minimum distance to any boundary face (using cached faces)
         min_distance = float('inf')
+        # Reuse request and result objects for efficiency
         request = fcl.DistanceRequest()
-        result = fcl.DistanceResult()
         
-        for geom, transform in boundary_faces:
-            wall = fcl.CollisionObject(geom, transform)
-            fcl.distance(collision_obj, wall, request, result)
+        epsilon = 0.01  # Thin plane thickness used in boundary face creation
+        
+        for wall in self._boundary_faces:
+            result = fcl.DistanceResult()
+            fcl.distance(obj, wall, request, result)
             distance = result.min_distance
             
             if distance < min_distance:
@@ -483,14 +455,12 @@ class ConfigurationSpace3D:
         This provides smooth, continuous data for optimization cost functions.
         
         Args:
-            obj: fcl.CollisionObject or Box3D object to query
+            obj: fcl.CollisionObject to query
             t: Time at which to check collision (default: 0.0)
             
         Returns:
             CollisionQueryResult with complete proximity information
         """
-        collision_obj = self._to_collision_object(obj)
-        
         # Check boundary collision
         is_out_of_bounds = not self.is_in_bounds(obj)
         
@@ -500,14 +470,16 @@ class ConfigurationSpace3D:
         num_collisions = 0
         min_distance = float('inf')
         
-        dist_request = fcl.DistanceRequest()
-        dist_result = fcl.DistanceResult()
+        # Reuse request and result objects for efficiency
+        # Enable nearest points is disabled by default for speed
+        dist_request = fcl.DistanceRequest(enable_nearest_points=False)
         
         for idx, obstacle in enumerate(self.obstacles):
+            dist_result = fcl.DistanceResult()
             obstacle_collision_obj = obstacle.get_collision_object(t)
             
             # Get distance (negative if penetrating)
-            fcl.distance(collision_obj, obstacle_collision_obj, dist_request, dist_result)
+            fcl.distance(obj, obstacle_collision_obj, dist_request, dist_result)
             distance = dist_result.min_distance
             
             # Determine collision and penetration depth
@@ -552,18 +524,16 @@ class ConfigurationSpace3D:
         between the closest points on the two objects.
         
         Args:
-            obj1: First fcl.CollisionObject or Box3D object
-            obj2: Second fcl.CollisionObject or Box3D object
+            obj1: First fcl.CollisionObject
+            obj2: Second fcl.CollisionObject
             
         Returns:
             float: Closest distance between objects (0 if colliding, negative if penetrating)
         """
-        collision_obj1 = ConfigurationSpace3D._to_collision_object(obj1)
-        collision_obj2 = ConfigurationSpace3D._to_collision_object(obj2)
-        
-        request = fcl.DistanceRequest()
+        # Disable nearest points computation for speed (we only need distance)
+        request = fcl.DistanceRequest(enable_nearest_points=False)
         result = fcl.DistanceResult()
-        fcl.distance(collision_obj1, collision_obj2, request, result)
+        fcl.distance(obj1, obj2, request, result)
         
         return result.min_distance
     
@@ -585,6 +555,369 @@ class ConfigurationSpace3D:
         self.zMin = -10
         self.zMax = 10
         self._update_boundary_box()
+        self._create_boundary_faces()
+    
+    @staticmethod
+    def _get_box_vertices(center: np.ndarray, rotation: np.ndarray, 
+                          size: np.ndarray) -> np.ndarray:
+        """
+        Get the 8 vertices of a 3D box given its center, rotation, and size.
+        
+        Args:
+            center: 3D center position [x, y, z]
+            rotation: 3x3 rotation matrix
+            size: Box dimensions [width, depth, height]
+            
+        Returns:
+            8x3 array of vertices
+        """
+        # Define box vertices in local frame (centered at origin)
+        half_size = size / 2.0
+        local_vertices = np.array([
+            [-half_size[0], -half_size[1], -half_size[2]],
+            [ half_size[0], -half_size[1], -half_size[2]],
+            [ half_size[0],  half_size[1], -half_size[2]],
+            [-half_size[0],  half_size[1], -half_size[2]],
+            [-half_size[0], -half_size[1],  half_size[2]],
+            [ half_size[0], -half_size[1],  half_size[2]],
+            [ half_size[0],  half_size[1],  half_size[2]],
+            [-half_size[0],  half_size[1],  half_size[2]],
+        ])
+        
+        # Transform vertices to world frame
+        world_vertices = (rotation @ local_vertices.T).T + center
+        return world_vertices
+    
+    @staticmethod
+    def _get_box_faces(vertices: np.ndarray) -> List[np.ndarray]:
+        """
+        Get the 6 faces of a box from its 8 vertices.
+        
+        Args:
+            vertices: 8x3 array of vertices
+            
+        Returns:
+            List of 6 face arrays, each 4x3 (quad vertices)
+        """
+        # Define faces by vertex indices
+        face_indices = [
+            [0, 1, 2, 3],  # Bottom
+            [4, 5, 6, 7],  # Top
+            [0, 1, 5, 4],  # Front
+            [2, 3, 7, 6],  # Back
+            [0, 3, 7, 4],  # Left
+            [1, 2, 6, 5],  # Right
+        ]
+        
+        faces = [vertices[face_idx] for face_idx in face_indices]
+        return faces
+    
+    def plot_configuration_space(self, 
+                                  t: float = 0.0,
+                                  ax: Optional[plt.Axes] = None,
+                                  show_bounds: bool = True,
+                                  show_obstacles: bool = True,
+                                  obstacle_alpha: float = 0.3,
+                                  obstacle_color: str = 'red',
+                                  bounds_alpha: float = 0.1,
+                                  bounds_color: str = 'gray',
+                                  bounds_edge_color: str = 'black',
+                                  bounds_edge_width: float = 2.0,
+                                  title: Optional[str] = None) -> plt.Axes:
+        """
+        Plot the 3D configuration space with boundaries and obstacles.
+        
+        Visualizes the bounded region and all obstacles (static and dynamic) at a given time.
+        Obstacles are rendered semi-transparent to allow viewing of overlapping structures.
+        
+        Args:
+            t: Time at which to evaluate dynamic obstacles (default: 0.0)
+            ax: Matplotlib 3D axes. If None, creates new figure (default: None)
+            show_bounds: Whether to show the configuration space boundaries (default: True)
+            show_obstacles: Whether to show obstacles (default: True)
+            obstacle_alpha: Transparency of obstacles, 0=transparent, 1=opaque (default: 0.3)
+            obstacle_color: Color for obstacle rendering (default: 'red')
+            bounds_alpha: Transparency of boundary box (default: 0.1)
+            bounds_color: Color for boundary faces (default: 'gray')
+            bounds_edge_color: Color for boundary edges (default: 'black')
+            bounds_edge_width: Width of boundary edges (default: 2.0)
+            title: Plot title. If None, generates default title (default: None)
+            
+        Returns:
+            Matplotlib 3D axes with the plot
+            
+        Example:
+            >>> config_space = ConfigurationSpace3D([0, 100, 0, 100, 0, 50])
+            >>> # Add some obstacles...
+            >>> ax = config_space.plot_configuration_space(t=5.0, obstacle_alpha=0.4)
+            >>> plt.show()
+        """
+        # Create axes if not provided
+        if ax is None:
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot boundary box
+        if show_bounds:
+            center = np.array([
+                (self.xMin + self.xMax) / 2,
+                (self.yMin + self.yMax) / 2,
+                (self.zMin + self.zMax) / 2
+            ])
+            size = np.array([
+                self.xMax - self.xMin,
+                self.yMax - self.yMin,
+                self.zMax - self.zMin
+            ])
+            
+            vertices = self._get_box_vertices(center, np.eye(3), size)
+            faces = self._get_box_faces(vertices)
+            
+            # Add semi-transparent boundary faces
+            poly = Poly3DCollection(faces, alpha=bounds_alpha, 
+                                   facecolor=bounds_color, 
+                                   edgecolor=bounds_edge_color,
+                                   linewidth=bounds_edge_width)
+            ax.add_collection3d(poly)
+        
+        # Plot obstacles
+        if show_obstacles:
+            for obstacle in self.obstacles:
+                transform = obstacle.get_transform(t)
+                center = transform.getTranslation()
+                rotation = transform.getRotation()
+                
+                # Extract geometry dimensions based on type
+                geom = obstacle.geometry
+                
+                if isinstance(geom, fcl.Box):
+                    # Box obstacle
+                    size = geom.side
+                    vertices = self._get_box_vertices(center, rotation, size)
+                    faces = self._get_box_faces(vertices)
+                    
+                    poly = Poly3DCollection(faces, alpha=obstacle_alpha,
+                                          facecolor=obstacle_color,
+                                          edgecolor='darkred',
+                                          linewidth=1.0)
+                    ax.add_collection3d(poly)
+                
+                elif isinstance(geom, fcl.Sphere):
+                    # Sphere obstacle - use wireframe
+                    radius = geom.radius
+                    u = np.linspace(0, 2 * np.pi, 20)
+                    v = np.linspace(0, np.pi, 20)
+                    x = radius * np.outer(np.cos(u), np.sin(v)) + center[0]
+                    y = radius * np.outer(np.sin(u), np.sin(v)) + center[1]
+                    z = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + center[2]
+                    ax.plot_surface(x, y, z, alpha=obstacle_alpha, color=obstacle_color)
+                
+                elif isinstance(geom, fcl.Cylinder):
+                    # Cylinder obstacle - approximate with polygons
+                    radius = geom.radius
+                    height = geom.lz
+                    
+                    # Create cylinder vertices
+                    theta = np.linspace(0, 2*np.pi, 20)
+                    z_cyl = np.array([-height/2, height/2])
+                    
+                    # Generate cylinder surface in local frame
+                    for i in range(len(theta)-1):
+                        # Four corners of the rectangular face
+                        local_face = np.array([
+                            [radius*np.cos(theta[i]), radius*np.sin(theta[i]), -height/2],
+                            [radius*np.cos(theta[i+1]), radius*np.sin(theta[i+1]), -height/2],
+                            [radius*np.cos(theta[i+1]), radius*np.sin(theta[i+1]), height/2],
+                            [radius*np.cos(theta[i]), radius*np.sin(theta[i]), height/2],
+                        ])
+                        
+                        # Transform to world frame
+                        world_face = (rotation @ local_face.T).T + center
+                        
+                        poly = Poly3DCollection([world_face], alpha=obstacle_alpha,
+                                              facecolor=obstacle_color,
+                                              edgecolor='darkred',
+                                              linewidth=0.5)
+                        ax.add_collection3d(poly)
+                    
+                    # Add top and bottom caps
+                    for z_val in [-height/2, height/2]:
+                        cap_vertices = []
+                        for th in theta:
+                            local_pt = np.array([radius*np.cos(th), radius*np.sin(th), z_val])
+                            world_pt = rotation @ local_pt + center
+                            cap_vertices.append(world_pt)
+                        
+                        poly = Poly3DCollection([cap_vertices], alpha=obstacle_alpha,
+                                              facecolor=obstacle_color,
+                                              edgecolor='darkred',
+                                              linewidth=0.5)
+                        ax.add_collection3d(poly)
+        
+        # Set axis limits
+        ax.set_xlim([self.xMin, self.xMax])
+        ax.set_ylim([self.yMin, self.yMax])
+        ax.set_zlim([self.zMin, self.zMax])
+        
+        # Labels
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        
+        # Title
+        if title is None:
+            title = f'Configuration Space (t={t:.2f}s)'
+        ax.set_title(title)
+        
+        # Add legend
+        legend_elements = []
+        if show_obstacles:
+            legend_elements.append(mpatches.Patch(facecolor=obstacle_color, 
+                                                 alpha=obstacle_alpha,
+                                                 edgecolor='darkred',
+                                                 label='Obstacles'))
+        if show_bounds:
+            legend_elements.append(mpatches.Patch(facecolor=bounds_color,
+                                                 alpha=bounds_alpha,
+                                                 edgecolor=bounds_edge_color,
+                                                 label='Bounds'))
+        if legend_elements:
+            ax.legend(handles=legend_elements, loc='upper right')
+        
+        return ax
+    
+    def plot_vehicle_trajectory(self,
+                                trajectory: Union[np.ndarray, List[np.ndarray]],
+                                times: Optional[List[float]] = None,
+                                vehicle_geometry: Optional[fcl.CollisionGeometry] = None,
+                                sample_indices: Optional[List[int]] = None,
+                                ax: Optional[plt.Axes] = None,
+                                trajectory_color: str = 'blue',
+                                trajectory_width: float = 2.0,
+                                vehicle_alpha: float = 0.5,
+                                vehicle_color: str = 'green',
+                                show_trajectory_line: bool = True,
+                                show_vehicle_boxes: bool = True,
+                                t_obstacles: float = 0.0,
+                                **config_space_kwargs) -> plt.Axes:
+        """
+        Plot vehicle trajectory through configuration space with bounding boxes at sample points.
+        
+        This method visualizes:
+        1. The configuration space (boundaries and obstacles at time t_obstacles)
+        2. The vehicle's trajectory as a line
+        3. The vehicle's bounding box at specified time points
+        
+        Args:
+            trajectory: Array of positions, shape (N, 3) or list of N position arrays [x, y, z]
+            times: Optional list of times corresponding to trajectory points.
+                   Used with dynamic obstacles if t_obstacles='from_trajectory'
+            vehicle_geometry: FCL geometry for the vehicle (e.g., fcl.Box, fcl.Sphere).
+                             Required if show_vehicle_boxes=True
+            sample_indices: Indices at which to draw vehicle bounding boxes.
+                           If None, draws at evenly spaced intervals (default: 10 samples)
+            ax: Matplotlib 3D axes. If None, creates new figure
+            trajectory_color: Color for trajectory line (default: 'blue')
+            trajectory_width: Width of trajectory line (default: 2.0)
+            vehicle_alpha: Transparency of vehicle boxes (default: 0.5)
+            vehicle_color: Color for vehicle boxes (default: 'green')
+            show_trajectory_line: Whether to show the trajectory line (default: True)
+            show_vehicle_boxes: Whether to show vehicle bounding boxes (default: True)
+            t_obstacles: Time at which to show obstacles. Can be:
+                        - float: specific time
+                        - 'from_trajectory': use times from trajectory (requires times parameter)
+                        (default: 0.0)
+            **config_space_kwargs: Additional arguments passed to plot_configuration_space
+                                  (e.g., obstacle_alpha, bounds_alpha, etc.)
+            
+        Returns:
+            Matplotlib 3D axes with the plot
+            
+        Example:
+            >>> # Create trajectory
+            >>> trajectory = np.array([[0, 0, 1], [10, 10, 5], [20, 20, 10], [30, 30, 15]])
+            >>> times = [0.0, 1.0, 2.0, 3.0]
+            >>> 
+            >>> # Plot with vehicle boxes at indices 0, 1, 2, 3
+            >>> vehicle_geom = fcl.Box(1.0, 1.0, 0.5)
+            >>> ax = config_space.plot_vehicle_trajectory(
+            ...     trajectory, times=times, vehicle_geometry=vehicle_geom,
+            ...     sample_indices=[0, 1, 2, 3], t_obstacles=2.0
+            ... )
+            >>> plt.show()
+        """
+        # Convert trajectory to numpy array
+        if isinstance(trajectory, list):
+            trajectory = np.array(trajectory)
+        
+        if trajectory.shape[1] != 3:
+            raise ValueError(f"Trajectory must have shape (N, 3), got {trajectory.shape}")
+        
+        # Plot configuration space first
+        if ax is None:
+            fig = plt.figure(figsize=(12, 10))
+            ax = fig.add_subplot(111, projection='3d')
+        
+        # Determine obstacle time
+        obs_time = t_obstacles
+        if isinstance(t_obstacles, str) and t_obstacles == 'from_trajectory':
+            if times is None:
+                raise ValueError("times parameter required when t_obstacles='from_trajectory'")
+            obs_time = times[len(times)//2]  # Use middle time
+        
+        ax = self.plot_configuration_space(t=obs_time, ax=ax, **config_space_kwargs)
+        
+        # Plot trajectory line
+        if show_trajectory_line:
+            ax.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2],
+                   color=trajectory_color, linewidth=trajectory_width, 
+                   label='Trajectory', zorder=10)
+        
+        # Plot vehicle boxes at sample points
+        if show_vehicle_boxes:
+            if vehicle_geometry is None:
+                raise ValueError("vehicle_geometry required when show_vehicle_boxes=True")
+            
+            # Determine sample indices
+            if sample_indices is None:
+                # Default: 10 evenly spaced samples
+                n_samples = min(10, len(trajectory))
+                sample_indices = np.linspace(0, len(trajectory)-1, n_samples, dtype=int)
+            
+            for idx in sample_indices:
+                position = trajectory[idx]
+                
+                # Extract geometry dimensions
+                if isinstance(vehicle_geometry, fcl.Box):
+                    size = vehicle_geometry.side
+                    vertices = self._get_box_vertices(position, np.eye(3), size)
+                    faces = self._get_box_faces(vertices)
+                    
+                    poly = Poly3DCollection(faces, alpha=vehicle_alpha,
+                                          facecolor=vehicle_color,
+                                          edgecolor='darkgreen',
+                                          linewidth=1.5,
+                                          zorder=5)
+                    ax.add_collection3d(poly)
+                
+                elif isinstance(vehicle_geometry, fcl.Sphere):
+                    radius = vehicle_geometry.radius
+                    u = np.linspace(0, 2 * np.pi, 15)
+                    v = np.linspace(0, np.pi, 15)
+                    x = radius * np.outer(np.cos(u), np.sin(v)) + position[0]
+                    y = radius * np.outer(np.sin(u), np.sin(v)) + position[1]
+                    z = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + position[2]
+                    ax.plot_surface(x, y, z, alpha=vehicle_alpha, color=vehicle_color, zorder=5)
+        
+        # Update legend
+        if show_vehicle_boxes:
+            vehicle_patch = mpatches.Patch(facecolor=vehicle_color, alpha=vehicle_alpha,
+                                          edgecolor='darkgreen', label='Vehicle')
+            handles, labels = ax.get_legend_handles_labels()
+            handles.append(vehicle_patch)
+            ax.legend(handles=handles, loc='upper right')
+        
+        return ax
 
 
 # Test main function
