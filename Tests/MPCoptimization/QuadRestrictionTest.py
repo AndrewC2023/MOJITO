@@ -19,12 +19,15 @@ root_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(root_dir / "src"))
 sys.path.append(str(root_dir / "dependencies" / "gncpy" / "src"))
 
-from gncpy.dynamics.aircraft import SimpleMultirotorQuat
+from gncpy.dynamics.aircraft.simple_multirotor_quat import SimpleMultirotorQuat, v_smap_quat
+from gncpy.dynamics.aircraft.simple_multirotor import Effector
+import gncpy.math as gmath
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D # type: ignore
 from ConfigurationSpace.Obstacles import StaticObstacle # type: ignore
 from Vehicles.Vehicle import Vehicle # type: ignore
 from Controls.NACMPC import NACMPC # type: ignore
 from Optimizers.OptimizerBase import OptimizerBase, CostFunction # type: ignore
+from Optimizers.CrossEntropyMethod import CrossEntropyMethod # type: ignore
 
 # configuration setup (Note we are in NED frame - this makes dynamics frame conversion easier for me)
 dim = [0, 10, -2.5, 2.5, 0, -5]
@@ -35,25 +38,51 @@ GRAVITY = np.array([0,0,9.81])  # acceleration vector in NED frame
 config_file = Path(__file__).parent / "SmallQuadrotor.yaml"
 QuadDynamics = SimpleMultirotorQuat(str(config_file), effector=None)
 
+# Initialize vehicle with proper NED setup
+INIT_POS = np.array([1.5, -1.25, -1.5])  # NED (m)
+INIT_VEL = np.array([0.0, 0.0, 0.0])  # body frame (m/s)
+INIT_EULER = np.array([0.0, 0.0, 0.0])  # roll, pitch, yaw (deg)
+INIT_RATES = np.array([0.0, 0.0, 0.0])  # body rates (rad/s)
+REF_LAT, REF_LON, TERRAIN_ALT = 34.0, -86.0, 0.0
+ned_mag = np.array([20.0, 5.0, 45.0])
+
+QuadDynamics.set_initial_conditions(
+    INIT_POS, INIT_VEL, INIT_EULER, INIT_RATES, REF_LAT, REF_LON, TERRAIN_ALT, ned_mag
+)
+QuadDynamics.vehicle.takenoff = True
+
+print(f"\n=== Vehicle State Initialization ===")
+print(f"State shape: {QuadDynamics.vehicle.state.shape}")
+print(f"NED position: {QuadDynamics.vehicle.state[v_smap_quat.ned_pos]}")
+print(f"Body velocity: {QuadDynamics.vehicle.state[v_smap_quat.body_vel]}")
+print(f"Quaternion: {QuadDynamics.vehicle.state[v_smap_quat.quat]}")
+print(f"Body rates: {QuadDynamics.vehicle.state[v_smap_quat.body_rot_rate]}")
+print(f"State vector length: {len(QuadDynamics.vehicle.state)}")
 
 # Vehicle geometry (0.3m x 0.3m x 0.1m)
 vehicle_geometry = fcl.Box(0.3, 0.3, 0.1)
 
-# State is 12 Dof (pos, vel, euler angles, angular rates) maybe the mixed representaiton idk
-x0 = np.array([1.5, -1.25, -1.5, 0,0,0, 0,0,0, 0,0,0])  # initial state
-u0 = np.array([0,0,0,0])  # initial input This actually need to be the hover
+# Initial state (13-DOF with quaternions: pos(3), vel(3), quat(4), rates(3))
+x0 = QuadDynamics.vehicle.state.copy()
 
 # Goal position (on the other side of the slit)
 goal_position = np.array([8.5, 1.25, -3.5])  # [x, y, z] in NED
 
-x_goal = np.array([8.5, 4, 1.5, 0,0,0, 0,0,0, 0,0,0])  # goal state
+# Goal state (13-DOF)
+x_goal = x0.copy()
+x_goal[v_smap_quat.ned_pos] = goal_position
+x_goal[v_smap_quat.body_vel] = np.zeros(3)  # zero velocity at goal
+x_goal[v_smap_quat.body_rot_rate] = np.zeros(3)  # zero rates at goal
+
+print(f"\nGoal position: {goal_position}")
+print(f"Goal state shape: {x_goal.shape}")
 
 # Construct vehicle
 vehicle = Vehicle(
     dynamics_class=QuadDynamics,
     geometry=vehicle_geometry,
     initial_state=x0,
-    state_indices={'position': [0, 1, 2]}  # NED position in state
+    state_indices={'position': [0, 1, 2]}  # NED position in state (v_smap_quat.ned_pos)
 )
 
 """Set up configuration space with a vertical wall containing a narrow slit.
@@ -192,26 +221,47 @@ class QuadSlitCostFunction(CostFunction):
         if collision_result is None:
             raise ValueError("collision_result must be provided in kwargs")
         
+        # Extract 12-DOF reduced state from full 48-DOF SimpleMultirotorQuat state
+        # [ned_pos(3), body_vel(3), euler(3), body_rates(3)]
+        ned_pos = state[v_smap_quat.ned_pos]
+        body_vel = state[v_smap_quat.body_vel]
+        quat = state[v_smap_quat.quat]
+        body_rates = state[v_smap_quat.body_rot_rate]
+        
+        # Convert quaternion to Euler angles for cost evaluation
+        roll, pitch, yaw = gmath.quat_to_euler(quat)
+        
+        # Build 12-DOF reduced state vector - FLATTEN to 1D
+        state_12dof = np.concatenate([ned_pos, body_vel, [roll, pitch, yaw], body_rates]).flatten()
+        
+        # Extract 12-DOF goal state from full goal state
+        goal_ned_pos = self.goal_state[v_smap_quat.ned_pos]
+        goal_body_vel = self.goal_state[v_smap_quat.body_vel]
+        goal_quat = self.goal_state[v_smap_quat.quat]
+        goal_body_rates = self.goal_state[v_smap_quat.body_rot_rate]
+        goal_roll, goal_pitch, goal_yaw = gmath.quat_to_euler(goal_quat)
+        goal_12dof = np.concatenate([goal_ned_pos, goal_body_vel, [goal_roll, goal_pitch, goal_yaw], goal_body_rates]).flatten()
+        
         # 1. LQR-style state penalty: (x - x_goal)^T Q (x - x_goal)
-        state_error = state - self.goal_state
-        state_cost = state_error.T @ self.Q @ state_error
+        state_error = state_12dof - goal_12dof
+        state_cost = float(state_error.T @ self.Q @ state_error)
         cost += state_cost
         
         # 2. LQR-style control penalty: u^T R u
-        # (Assumes hover control is near zero; otherwise penalize deviation from u_hover)
-        control_cost = control.T @ self.R @ control
+        control_flat = control.flatten()
+        control_cost = float(control_flat.T @ self.R @ control_flat)
         cost += control_cost
         
         # 3. Collision penalty (strongly penalize based on penetration depth)
         # Use exponential scaling so deeper collisions are much more expensive
         if collision_result.has_collision and collision_result.num_collisions > 0:
             # Exponential penalty: grows with penetration depth (scaled by factor of 3)
-            collision_cost = self.collision_weight * (np.exp(collision_result.total_penetration_depth * 3.0) - 1.0)
+            collision_cost = float(self.collision_weight * (np.exp(collision_result.total_penetration_depth * 3.0) - 1.0))
             cost += collision_cost
         
         # 4. Boundary violation penalty (very severe - we never want to leave bounds)
         if collision_result.is_out_of_bounds:
-            cost += self.boundary_weight
+            cost += float(self.boundary_weight)
         
         # 5. Proximity penalty (logarithmic barrier to encourage safe distances)
         # Only apply if NOT already in collision (collision penalty dominates)
@@ -221,18 +271,18 @@ class QuadSlitCostFunction(CostFunction):
             # Prevent log(0) or log(negative) - clamp minimum distance
             safe_distance = max(collision_result.min_obstacle_distance, 0.01)
             # Log barrier: -log(d) grows rapidly as d -> 0
-            proximity_cost = self.proximity_weight * (-np.log(safe_distance / self.proximity_threshold))
+            proximity_cost = float(self.proximity_weight * (-np.log(safe_distance / self.proximity_threshold)))
             cost += proximity_cost
         
         # 6. Goal position tracking penalty
-        current_position = state[0:3]  # Extract position from state
-        goal_distance = np.linalg.norm(current_position - self.goal_position)
-        goal_cost = self.goal_weight * goal_distance ** 2
+        current_position = ned_pos  # Use extracted NED position
+        goal_distance = float(np.linalg.norm(current_position - self.goal_position))
+        goal_cost = float(self.goal_weight * goal_distance ** 2)
         cost += goal_cost
         
         # 7. Terminal cost (large penalty if final state is far from goal)
         if is_terminal:
-            terminal_cost = self.terminal_goal_weight * goal_distance ** 2
+            terminal_cost = float(self.terminal_goal_weight * goal_distance ** 2)
             cost += terminal_cost
         
         # Scale by time step for time-consistent cost accumulation
@@ -347,3 +397,109 @@ plt.tight_layout()
 plt.savefig(out_path, dpi=150)
 plt.close(fig)
 print(f"Saved slit configuration figure (3 views) with vehicle at x0 to {out_path}")
+
+# ============================================================
+# RUN MPC OPTIMIZATION
+# ============================================================
+print("\n" + "="*60)
+print("RUNNING NAC-MPC OPTIMIZATION")
+print("="*60)
+
+# Create CEM optimizer
+optimizer = CrossEntropyMethod(
+    population_size=50,       # Reduced for speed (was 200)
+    elite_frac=0.2,           # Keep top 20% as elites (10 samples)
+    max_iterations=15,        # Reduced iterations (was 25)
+    epsilon=1e-3,             # Convergence threshold
+    alpha=0.0,                # No smoothing for MPC (fast adaptation)
+    initial_std=0.3,          # Moderate initial exploration
+    min_std=1e-3,             # Prevent premature convergence
+    bounds=None,              # Use default [0, 1] bounds
+    verbose=True              # Print progress
+)
+
+# Create NAC-MPC controller with CEM optimizer
+from Controls.NACMPC import SplineInterpolationInput
+
+# Initial decision vector
+# Format: [horizon, kf0_u0, kf0_u1, kf0_u2, kf0_u3, kf1_u0, ...]
+num_keyframes = 5
+horizon = 3.0  # seconds
+
+# Create input function instance
+input_func = SplineInterpolationInput(
+    numKeyframes=num_keyframes,
+    totalSteps=1000,  # Will be updated during rollout
+    control_dim=4,
+    u_min=0.0,
+    u_max=1.0
+)
+
+controller = NACMPC(
+    vehicle=vehicle,
+    costFunction=cost_function,
+    optimizer=optimizer,
+    inputFunction=input_func,
+    control_dim=4,  # 4 rotor inputs
+    debug=True,  # Enable debug prints
+    physicsSteps=50,  # Reduced for speed (was 1000) - still adequate for control
+    numControlKeyframes=num_keyframes,
+    dynamicHorizon=True,
+    maxHorizon=10.0,
+    minHorizon=1.0
+)
+
+# Start with hover thrust for all keyframes
+hover_thrust = 0.25  # Normalized hover thrust
+initial_decision = np.zeros(1 + num_keyframes * 4)
+initial_decision[0] = horizon
+initial_decision[1:] = hover_thrust  # All rotors at hover
+
+print(f"\nInitial guess:")
+print(f"  Horizon: {horizon:.2f}s")
+print(f"  Keyframes: {num_keyframes}")
+print(f"  Initial control: {hover_thrust} (hover thrust)")
+
+# Cost function context (collision checks, etc.)
+cost_context = {
+    'goal_state': x_goal,
+    'goal_position': goal_position,
+    'Q': Q,
+    'R': R,
+    'config_space': config_space,  # Pass config_space for collision queries
+}
+
+# Run optimization
+print(f"\nStarting optimization from x0 = {x0[:3]}")
+print(f"Goal position: {goal_position}")
+print(f"Decision vector dimension: {len(initial_decision)}")
+
+optimized_decision = controller.plan(x0, initial_decision, **cost_context)
+
+print("\n" + "="*60)
+print("OPTIMIZATION COMPLETE")
+print("="*60)
+
+# Extract optimized parameters
+opt_horizon = optimized_decision[0]
+opt_keyframe_values = optimized_decision[1:].reshape(num_keyframes, 4)
+
+print(f"\nOptimized horizon: {opt_horizon:.3f}s")
+print(f"Optimized keyframe controls:")
+for i, kf in enumerate(opt_keyframe_values):
+    print(f"  KF{i}: {kf}")
+
+# Evaluate final cost
+final_cost = controller.evaluate_decision_vector(optimized_decision)
+initial_cost = controller.evaluate_decision_vector(initial_decision)
+
+print(f"\nInitial cost: {initial_cost:.4f}")
+print(f"Final cost: {final_cost:.4f}")
+print(f"Improvement: {initial_cost - final_cost:.4f} ({100*(initial_cost-final_cost)/initial_cost:.1f}%)")
+
+# Get convergence history
+history = optimizer.get_iteration_history()
+print(f"\nConvergence history ({len(history)} iterations):")
+print(f"  {history}")
+
+print("\n✅ MPC optimization complete!")

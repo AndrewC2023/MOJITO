@@ -189,8 +189,23 @@ class Vehicle:
         np.ndarray
             The propagated state
         """
-        # Propagate state using the dynamics model
-        self.state = self.model.propagate_state(dt, self.state, u=u, **kwargs)
+        if u is None:
+            u = np.zeros(4)  # Default control for quadrotor
+        
+        # Try different propagate_state signatures
+        # SimpleMultirotorQuat uses: propagate_state(timestep, state, u=motor_cmds)
+        # SimpleMultirotor uses: propagate_state(motor_cmds, dt)
+        # Generic DynamicsBase uses: propagate_state(dt, state, u=u)
+        try:
+            # Try SimpleMultirotorQuat signature first (timestep, state, u=u, **kwargs)
+            self.state = self.model.propagate_state(dt, self.state, u=u, **kwargs)
+        except TypeError:
+            try:
+                # Try SimpleMultirotor signature (motor_cmds, dt)
+                self.state = self.model.propagate_state(u, dt)
+            except TypeError:
+                # Last resort: try (dt, state, u) without kwargs
+                self.state = self.model.propagate_state(dt, self.state, u)
         
         # Update collision object transform
         self._update_collision_object_from_state()
