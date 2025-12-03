@@ -2,25 +2,25 @@ import numpy as np
 from typing import Tuple, Optional, Union, Type
 import sys
 from pathlib import Path
+import fcl
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
-from Utils.GeometryUtils import Box3D, PointXYZ
 
 
 class Vehicle:
-    """Vehicle class integrating gncpy dynamics with Box3D collision geometry.
+    """Vehicle class integrating gncpy dynamics with FCL collision geometry.
     
-    Lightweight wrapper that holds a gncpy dynamics model and provides a Box3D object
-    for efficient collision checking with ConfigurationSpace3D.
+    Lightweight wrapper that holds a gncpy dynamics model and provides an FCL
+    collision object for efficient collision checking with ConfigurationSpace3D.
     
     Attributes
     ----------
     model : DynamicsBase
         The gncpy dynamics model (e.g., SimpleMultirotor, DoubleIntegrator).
         Access this directly for dynamics operations.
-    box : Box3D
-        The collision box for this vehicle
+    collision_object : fcl.CollisionObject
+        The FCL collision object for this vehicle
     state : np.ndarray
         Current state vector of the vehicle
     """
@@ -28,7 +28,7 @@ class Vehicle:
     def __init__(
         self, 
         dynamics_class: Union[Type, object],
-        size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        geometry: fcl.CollisionGeometry,
         initial_state: Optional[np.ndarray] = None,
         state_indices: Optional[dict] = None,
         **dynamics_kwargs
@@ -41,8 +41,8 @@ class Vehicle:
             Either a gncpy dynamics class (e.g., SimpleMultirotor) with **dynamics_kwargs,
             or an already instantiated dynamics object. If a class, it will be instantiated
             with dynamics_kwargs (e.g., params_file='path/to/config.yaml').
-        size : tuple of float, optional
-            Box dimensions (length, width, height) in meters. Default is (1, 1, 1).
+        geometry : fcl.CollisionGeometry
+            FCL geometry for the vehicle (e.g., fcl.Box, fcl.Sphere, fcl.Cylinder).
         initial_state : np.ndarray, optional
             Initial state vector. If None, state must be set later.
         state_indices : dict, optional
@@ -60,8 +60,8 @@ class Vehicle:
             # It's already an instance
             self.model = dynamics_class
         
-        # Store box size
-        self.size = PointXYZ(*size)
+        # Store geometry
+        self.geometry = geometry
         
         # Cache state indices for fast access
         if state_indices is None:
@@ -81,33 +81,44 @@ class Vehicle:
         # Initialize state
         self.state = np.asarray(initial_state).flatten() if initial_state is not None else None
         
-        # Create Box3D object at origin (will be updated)
-        self.box = Box3D(
-            center=PointXYZ(0, 0, 0),
-            size=self.size,
-            rotation=None
+        # Create FCL collision object at origin (will be updated)
+        self.collision_object = fcl.CollisionObject(
+            self.geometry,
+            fcl.Transform(np.eye(3), [0.0, 0.0, 0.0])
         )
         
-        # Update box position if we have initial state
+        # Update collision object if we have initial state
         if self.state is not None:
-            self._update_box_from_state()
+            self._update_collision_object_from_state()
     
-    def _update_box_from_state(self):
-        """Internal optimized method to update box position/rotation from state.
+    def _update_collision_object_from_state(self):
+        """Internal optimized method to update collision object transform from state.
         
         Uses cached indices for fast extraction without creating temporary objects.
+        Handles 2D states by setting z=0.
         """
+        # Ensure state is flattened for indexing
+        state_flat = self.state.flatten()
+        
         # Extract position using cached indices
-        position = PointXYZ(
-            self.state[self._pos_idx[0]],
-            self.state[self._pos_idx[1]],
-            self.state[self._pos_idx[2]]
-        )
+        # Handle 2D case (only x, y available)
+        if len(self._pos_idx) == 2:
+            position = np.array([
+                state_flat[self._pos_idx[0]],
+                state_flat[self._pos_idx[1]],
+                0.0  # z = 0 for 2D states
+            ], dtype=np.float64)
+        else:
+            position = np.array([
+                state_flat[self._pos_idx[0]],
+                state_flat[self._pos_idx[1]],
+                state_flat[self._pos_idx[2]]
+            ], dtype=np.float64)
         
         # Extract rotation if available
-        rotation = None
+        rotation = np.eye(3)
         if self._has_rotation:
-            rot_data = self.state[self._rot_idx]
+            rot_data = state_flat[self._rot_idx]
             rot_len = len(rot_data)
             
             if rot_len == 9:
@@ -117,8 +128,9 @@ class Vehicle:
                 # Euler angles - convert to rotation matrix
                 rotation = self._euler_to_dcm(rot_data[0], rot_data[1], rot_data[2])
         
-        # Update box transform (single call, optimized)
-        self.box.update_transform(center=position, rotation=rotation)
+        # Update collision object transform
+        transform = fcl.Transform(rotation, position)
+        self.collision_object.setTransform(transform)
     
     @staticmethod
     def _euler_to_dcm(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -155,17 +167,17 @@ class Vehicle:
     
     def propagate(
         self, 
-        timestep: float, 
+        dt: float, 
         u: Optional[np.ndarray] = None,
         **kwargs
     ) -> np.ndarray:
-        """Propagate vehicle state forward and update box position.
+        """Propagate vehicle state forward by dt and update collision object.
         
         Uses self.model.propagate_state() internally.
         
         Parameters
         ----------
-        timestep : float
+        dt : float
             Time step for propagation
         u : np.ndarray, optional
             Control input vector
@@ -178,15 +190,15 @@ class Vehicle:
             The propagated state
         """
         # Propagate state using the dynamics model
-        self.state = self.model.propagate_state(timestep, self.state, u=u, **kwargs)
+        self.state = self.model.propagate_state(dt, self.state, u=u, **kwargs)
         
-        # Update box position
-        self._update_box_from_state()
+        # Update collision object transform
+        self._update_collision_object_from_state()
         
         return self.state
     
     def set_state(self, state: np.ndarray):
-        """Set vehicle state and update box position.
+        """Set vehicle state and update collision object.
         
         Parameters
         ----------
@@ -194,7 +206,7 @@ class Vehicle:
             New state vector
         """
         self.state = np.asarray(state).flatten()
-        self._update_box_from_state()
+        self._update_collision_object_from_state()
     
     def get_position(self) -> np.ndarray:
         """Get current position as numpy array.
@@ -202,11 +214,26 @@ class Vehicle:
         Returns
         -------
         np.ndarray
-            Position [x, y, z]
+            Position [x, y, z] or [x, y] for 2D states
         """
-        return np.array([self.box.center.x, self.box.center.y, self.box.center.z])
+        state_flat = self.state.flatten()
+        if len(self._pos_idx) == 2:
+            return state_flat[self._pos_idx]
+        else:
+            return state_flat[self._pos_idx]
+    
+    def get_transform(self) -> fcl.Transform:
+        """Get current FCL transform of the vehicle.
+        
+        Returns
+        -------
+        fcl.Transform
+            Current transform of the collision object
+        """
+        return self.collision_object.getTransform()
     
     def __repr__(self) -> str:
         """String representation."""
         state_dim = len(self.state) if self.state is not None else "unset"
-        return f"Vehicle(model={type(self.model).__name__}, size=({self.size.x}, {self.size.y}, {self.size.z}), state_dim={state_dim})"
+        geom_type = type(self.geometry).__name__
+        return f"Vehicle(model={type(self.model).__name__}, geometry={geom_type}, state_dim={state_dim})"
