@@ -3,12 +3,14 @@ import numpy as np
 import time
 import sys
 from pathlib import Path
+import fcl
 
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from Vehicles.Vehicle import Vehicle
-from Utils.GeometryUtils import Box3D, PointXYZ
+from Utils.GeometryUtils import PointXYZ
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
+from ConfigurationSpace.Obstacles import StaticObstacle
 
 
 class SimpleDynamics:
@@ -33,25 +35,29 @@ def benchmark_collision_checks():
     num_obstacles = 50
     np.random.seed(42)
     for i in range(num_obstacles):
-        center = PointXYZ(
+        center = np.array([
             np.random.uniform(10, 90),
             np.random.uniform(10, 90),
             np.random.uniform(10, 90)
-        )
-        size = PointXYZ(
+        ])
+        size = np.array([
             np.random.uniform(2, 5),
             np.random.uniform(2, 5),
             np.random.uniform(2, 5)
-        )
-        config_space.add_obstacle(Box3D(center, size))
+        ])
+        geom = fcl.Box(*size)
+        transform = fcl.Transform(np.eye(3), center)
+        obstacle = StaticObstacle(geom, transform)
+        config_space.add_obstacle(obstacle)
     
     print(f"\nSetup: {num_obstacles} obstacles in 100x100x100 space")
     
     # Create vehicle
     dynamics = SimpleDynamics()
+    vehicle_geom = fcl.Box(1.0, 1.0, 1.0)
     vehicle = Vehicle(
         dynamics_class=dynamics,
-        size=(1.0, 1.0, 1.0),
+        geometry=vehicle_geom,
         initial_state=np.array([50.0, 50.0, 50.0])
     )
     
@@ -67,7 +73,7 @@ def benchmark_collision_checks():
     collision_count = 0
     for pos in positions:
         vehicle.set_state(np.concatenate([pos, [0, 0, 0]]))
-        if vehicle.check_collision_with_config_space(config_space):
+        if config_space.check_collision(vehicle.collision_object):
             collision_count += 1
     elapsed = time.perf_counter() - start_time
     
@@ -89,7 +95,7 @@ def benchmark_collision_checks():
     distances = []
     for pos in positions:
         vehicle.set_state(np.concatenate([pos, [0, 0, 0]]))
-        dist = vehicle.get_nearest_obstacle_distance(config_space)
+        dist = config_space.get_nearest_obstacle_distance(vehicle.collision_object)
         distances.append(dist)
     elapsed = time.perf_counter() - start_time
     
@@ -122,7 +128,7 @@ def benchmark_collision_checks():
             pos = start_pos + velocity * step * 0.1
             vehicle.set_state(np.concatenate([pos, velocity]))
             
-            if vehicle.check_collision_with_config_space(config_space):
+            if config_space.check_collision(vehicle.collision_object):
                 trajectory_valid = False
                 total_collisions += 1
                 break  # Early exit on collision (realistic MPC behavior)
