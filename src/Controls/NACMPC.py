@@ -171,8 +171,13 @@ class PiecewiseConstantInput(inputFunction):
         idx = np.searchsorted(self.keyframe_times, time, side='right') - 1
         idx = np.clip(idx, 0, self.numKeyframes - 1)
         
-        # Apply saturation limits
-        control = self.keyframeValues[idx].copy()
+        # Get keyframe values (assumed to be in [0, 1] from optimizer)
+        control_normalized = self.keyframeValues[idx].copy()
+        
+        # Map from [0, 1] to [u_min, u_max]
+        control = self.u_min + control_normalized * (self.u_max - self.u_min)
+        
+        # Safety: clip to bounds in case of numerical issues
         return np.clip(control, self.u_min, self.u_max)
 
 
@@ -506,6 +511,10 @@ class NACMPC:
         self.eval_count += 1
         decision_vector = np.asarray(decision_vector, dtype=float)
         
+        # Reset trajectory-specific accumulators in cost function
+        if hasattr(self.costFunction, 'reset_for_new_trajectory'):
+            self.costFunction.reset_for_new_trajectory()
+        
         if self.eval_count == 1:
             print(f"\n[NACMPC DIMENSION VALIDATION]")
             print(f"  decision_vector shape: {decision_vector.shape}")
@@ -548,7 +557,9 @@ class NACMPC:
         
         if self.eval_count == 1:
             print(f"  Initial state (_x0) shape: {self._x0.shape}")
+            print(f"  Initial state (_x0) values: {self._x0.flatten()}")
             print(f"  Vehicle state after set_state shape: {self.vehicle.state.shape}")
+            print(f"  Vehicle state after set_state values: {self.vehicle.state.flatten()}")
 
         total_cost = 0.0
         t = 0.0
@@ -556,14 +567,24 @@ class NACMPC:
             u = self.inputFunction.calculateInput(t)
             
             if self.eval_count == 1 and step == 0:
-                print(f"  Step 0 control u shape: {u.shape}, values: {u}")
+                print(f"\n[NACMPC Step 0 Debug]")
+                print(f"  Input function returns u shape: {u.shape}, values: {u.flatten()}")
+                print(f"  About to call vehicle.propagate(dt={dt}, u=u)")
+                print(f"  Vehicle state BEFORE propagate: {self.vehicle.state.flatten()}")
             
             state = self.vehicle.propagate(dt, u=u)
             # Note: Vehicle.propagate() internally updates collision object with both position AND rotation
             
             if self.eval_count == 1 and step == 0:
-                print(f"  Step 0 state after propagate shape: {state.shape}")
-                print(f"  Step 0 NED position: {state[4:7]}")
+                print(f"  State AFTER propagate shape: {state.shape}")
+                print(f"  State AFTER propagate values: {state.flatten()}")
+                print(f"  Vehicle.state AFTER propagate: {self.vehicle.state.flatten()}")
+            
+            if self.eval_count == 1 and step == 1:
+                print(f"\n[NACMPC Step 1 Debug]")
+                print(f"  Vehicle state BEFORE propagate: {self.vehicle.state.flatten()}")
+                u_step1 = self.inputFunction.calculateInput(t)
+                print(f"  Input u: {u_step1.flatten()}")
             
             # Check if this is the terminal step
             is_terminal = (step == total_steps - 1)
