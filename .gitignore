@@ -1,1 +1,4 @@
 **/__pycache__/
+
+# all auto generated plot png files
+**/*.png
