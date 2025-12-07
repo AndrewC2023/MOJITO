@@ -33,15 +33,7 @@ class inputFunction:
             Full control inputs for all time steps.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
-    def updateTimeStep(self, dt: float):
-        """Update the total number of time steps.
-        
-        Parameters
-        ----------
-        totalSteps : int
-            New total number of time steps.
-        """
-        self.dt = dt
+    
     def updateStartAndEndTimes(self, startTime: float, endTime: float):
         """Update the start and end times for the control inputs.
         
@@ -71,6 +63,7 @@ class inputFunction:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
+
 class PiecewiseConstantInput(inputFunction):
     """Zero-order hold: control stays constant from one keyframe to the next.
     
@@ -99,7 +92,6 @@ class PiecewiseConstantInput(inputFunction):
         self.control_dim = control_dim
         self.keyframeValues = None
         self.keyframe_times = None
-        self.dt = 0.1
         self.startTime = 0.0
         self.endTime = 1.0
         
@@ -133,7 +125,7 @@ class PiecewiseConstantInput(inputFunction):
             if keyframeValues.size != expected_size:
                 raise ValueError(
                     f"PiecewiseConstantInput: keyframeValues has {keyframeValues.size} elements, "
-                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes by {self.control_dim} controls). "
                     f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
                 )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
@@ -171,11 +163,8 @@ class PiecewiseConstantInput(inputFunction):
         idx = np.searchsorted(self.keyframe_times, time, side='right') - 1
         idx = np.clip(idx, 0, self.numKeyframes - 1)
         
-        # Get keyframe values (assumed to be in [0, 1] from optimizer)
-        control_normalized = self.keyframeValues[idx].copy()
-        
-        # Map from [0, 1] to [u_min, u_max]
-        control = self.u_min + control_normalized * (self.u_max - self.u_min)
+        # Get keyframe values directly (no normalization)
+        control = self.keyframeValues[idx].copy()
         
         # Safety: clip to bounds in case of numerical issues
         return np.clip(control, self.u_min, self.u_max)
@@ -207,7 +196,6 @@ class LinearInterpolationInput(inputFunction):
         self.control_dim = control_dim
         self.keyframeValues = None
         self.keyframe_times = None
-        self.dt = 0.1
         self.startTime = 0.0
         self.endTime = 1.0
         
@@ -240,7 +228,7 @@ class LinearInterpolationInput(inputFunction):
             if keyframeValues.size != expected_size:
                 raise ValueError(
                     f"LinearInterpolationInput: keyframeValues has {keyframeValues.size} elements, "
-                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes by {self.control_dim} controls). "
                     f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
                 )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
@@ -325,7 +313,6 @@ class SplineInterpolationInput(inputFunction):
         self.keyframeValues = None
         self.keyframe_times = None
         self.pchip_interpolators = None  # List of PchipInterpolator objects
-        self.dt = 0.1
         self.startTime = 0.0
         self.endTime = 1.0
         
@@ -358,7 +345,7 @@ class SplineInterpolationInput(inputFunction):
             if keyframeValues.size != expected_size:
                 raise ValueError(
                     f"SplineInterpolationInput: keyframeValues has {keyframeValues.size} elements, "
-                    f"but expected {expected_size} ({self.numKeyframes} keyframes × {self.control_dim} controls). "
+                    f"but expected {expected_size} ({self.numKeyframes} keyframes by {self.control_dim} controls). "
                     f"Cannot reshape to ({self.numKeyframes}, {self.control_dim})."
                 )
             self.keyframeValues = keyframeValues.reshape(self.numKeyframes, self.control_dim)
@@ -445,11 +432,12 @@ class NACMPC:
         self.eval_count = 0  # Track number of evaluations
 
         # default parameters
-        self.physicsSteps = 1000  # number of integration steps per rollout
+        self.physics_dt = 0.01  # physics integration timestep (seconds)
         self.numControlKeyframes = 100  # dimensionality of control keyframes
         self.dynamicHorizon = True  # optimizer can change horizon length
         self.maxHorizon = 15.0  # seconds
         self.minHorizon = 1.0  # seconds
+        self.verbose = False  # verbose output during evaluation
 
         # extra context passed into cost function (config space, goal, etc.)
         self.cost_context = {}
@@ -459,7 +447,7 @@ class NACMPC:
             if hasattr(self, key):
                 setattr(self, key, value)
         
-        # CRITICAL: Validate that numControlKeyframes matches inputFunction.numKeyframes
+        # Validate that numControlKeyframes matches inputFunction.numKeyframes
         if hasattr(self.inputFunction, 'numKeyframes'):
             if self.numControlKeyframes != self.inputFunction.numKeyframes:
                 raise ValueError(
@@ -470,9 +458,9 @@ class NACMPC:
                 )
         
         if self.debug:
-            print(f"[NACMPC.__init__] control_dim={self.control_dim}, numKeyframes={self.numControlKeyframes}, physicsSteps={self.physicsSteps}")
+            print(f"[NACMPC.__init__] control_dim={self.control_dim}, numKeyframes={self.numControlKeyframes}, physics_dt={self.physics_dt}")
 
-    # ---- public API used by user code ----
+    # public method used by user code 
 
     def plan(self, x0: np.ndarray, initial_decision: np.ndarray, **cost_context):
         """Run MPC planning and return the optimized decision vector.
@@ -496,7 +484,7 @@ class NACMPC:
 
         return self.optimizer.optimize(initial_decision, controller=self)
 
-    # ---- interface used by optimizers ----
+    # interface for optimizer
 
     def evaluate_decision_vector(self, decision_vector: np.ndarray) -> float:
         """Roll out dynamics for a candidate decision vector and return cost.
@@ -515,7 +503,7 @@ class NACMPC:
         if hasattr(self.costFunction, 'reset_for_new_trajectory'):
             self.costFunction.reset_for_new_trajectory()
         
-        if self.eval_count == 1:
+        if self.verbose and self.eval_count == 1:
             print(f"\n[NACMPC DIMENSION VALIDATION]")
             print(f"  decision_vector shape: {decision_vector.shape}")
             print(f"  expected: (1 + {self.numControlKeyframes} * {self.control_dim},) = ({1 + self.numControlKeyframes * self.control_dim},)")
@@ -527,25 +515,41 @@ class NACMPC:
             horizon = max(self.minHorizon, min(self.maxHorizon, horizon))
             keyframes = decision_vector[1:]
             
-            if self.eval_count == 1:
+            if self.verbose and self.eval_count == 1:
                 print(f"  horizon: {horizon}")
                 print(f"  keyframes shape: {keyframes.shape}, expected: ({self.numControlKeyframes * self.control_dim},)")
         else:
             horizon = self.maxHorizon
             keyframes = decision_vector
             
-            if self.eval_count == 1:
+            if self.verbose and self.eval_count == 1:
                 print(f"  Fixed horizon: {horizon}")
                 print(f"  keyframes shape: {keyframes.shape}")
 
         # set up time discretization
-        total_steps = self.physicsSteps
-        dt = horizon / total_steps
+        dt = self.physics_dt
+        total_steps = int(horizon / dt)
+        
+        # Warn if horizon doesn't divide evenly by physics_dt
+        actual_horizon = total_steps * dt
+        if abs(horizon - actual_horizon) > 1e-9:
+            import warnings
+            warnings.warn(
+                f"Horizon {horizon:.6f}s does not divide evenly by physics_dt {dt:.6f}s. "
+                f"Actual rollout horizon will be {actual_horizon:.6f}s ({total_steps} steps). "
+                f"Consider adjusting physics_dt or horizon for exact division.",
+                UserWarning,
+                stacklevel=2
+            )
 
         # configure input function
-        self.inputFunction.updateTimeStep(dt)
         self.inputFunction.updateStartAndEndTimes(0.0, horizon)
         self.inputFunction.updateKeyFrameValues(keyframes)
+        
+        if self.verbose and self.eval_count == 1:
+            print(f"  Keyframes passed to input function (first 9 values): {keyframes[:9]}")
+            print(f"  Input function keyframeValues shape after update: {self.inputFunction.keyframeValues.shape}")
+            print(f"  Input function keyframeValues[0]: {self.inputFunction.keyframeValues[0]}")
 
         # roll out dynamics from x0
         # make a copy of the vehicle state so optimization is side-effect free
@@ -555,7 +559,7 @@ class NACMPC:
         else:
             self.vehicle.set_state(self._x0)
         
-        if self.eval_count == 1:
+        if self.verbose and self.eval_count == 1:
             print(f"  Initial state (_x0) shape: {self._x0.shape}")
             print(f"  Initial state (_x0) values: {self._x0.flatten()}")
             print(f"  Vehicle state after set_state shape: {self.vehicle.state.shape}")
@@ -566,7 +570,7 @@ class NACMPC:
         for step in range(total_steps):
             u = self.inputFunction.calculateInput(t)
             
-            if self.eval_count == 1 and step == 0:
+            if self.verbose and self.eval_count == 1 and step == 0:
                 print(f"\n[NACMPC Step 0 Debug]")
                 print(f"  Input function returns u shape: {u.shape}, values: {u.flatten()}")
                 print(f"  About to call vehicle.propagate(dt={dt}, u=u)")
@@ -575,12 +579,12 @@ class NACMPC:
             state = self.vehicle.propagate(dt, u=u)
             # Note: Vehicle.propagate() internally updates collision object with both position AND rotation
             
-            if self.eval_count == 1 and step == 0:
+            if self.verbose and self.eval_count == 1 and step == 0:
                 print(f"  State AFTER propagate shape: {state.shape}")
                 print(f"  State AFTER propagate values: {state.flatten()}")
                 print(f"  Vehicle.state AFTER propagate: {self.vehicle.state.flatten()}")
             
-            if self.eval_count == 1 and step == 1:
+            if self.verbose and self.eval_count == 1 and step == 1:
                 print(f"\n[NACMPC Step 1 Debug]")
                 print(f"  Vehicle state BEFORE propagate: {self.vehicle.state.flatten()}")
                 u_step1 = self.inputFunction.calculateInput(t)

@@ -3,7 +3,6 @@
 CEM is a derivative-free optimization method particularly well-suited for:
 - High-dimensional nonconvex problems
 - Noisy or discontinuous cost functions
-- Model Predictive Control with arbitrary cost functions
 
 Algorithm:
 1. Sample N candidates from current Gaussian distribution
@@ -12,9 +11,9 @@ Algorithm:
 4. Refit Gaussian mean and covariance to elite samples
 5. Iterate until convergence or max iterations
 
-References:
-- Rubinstein & Kroese (2004), "The Cross-Entropy Method"
-- Chua et al. (2018), "Deep Reinforcement Learning in a Handful of Trials"
+
+The Best Reference I could fine for CEM is this book: Rubinstein & Kroese, "The Cross-Entropy Method"
+Theres an MIT tutorial as well that I reference in the paper
 """
 
 import numpy as np
@@ -43,9 +42,16 @@ class CrossEntropyMethod(OptimizerBase):
         Initial standard deviation(s) for sampling (default: 0.2)
     min_std : float
         Minimum standard deviation to prevent collapse (default: 1e-3)
-    bounds : tuple of (np.ndarray, np.ndarray), optional
-        (lower_bounds, upper_bounds) for decision variables
-        If None, assumes normalized controls [0, 1]
+    num_best_retained : int
+        Number of best solutions to retain across iterations (default: 0)
+        These solutions are injected into the elite set each iteration
+        to prevent losing good solutions. Set to 0 to disable.
+    bounds : tuple of (float/array, float/array), optional
+        (lower_bounds, upper_bounds) for decision variables.
+        Can be:
+        - None: assumes [0, 1] for all dimensions
+        - (scalar, scalar): same bounds for all dimensions
+        - (array, array): per-dimension bounds (must match decision_dim)
     seed : int, optional
         Random seed for reproducibility
     verbose : bool
@@ -61,6 +67,7 @@ class CrossEntropyMethod(OptimizerBase):
         alpha: float = 0.0,
         initial_std: float = 0.2,
         min_std: float = 1e-3,
+        num_best_retained: int = 0,
         bounds: Optional[tuple] = None,
         seed: Optional[int] = None,
         verbose: bool = False,
@@ -73,6 +80,7 @@ class CrossEntropyMethod(OptimizerBase):
         self.alpha = alpha
         self.initial_std = initial_std
         self.min_std = min_std
+        self.num_best_retained = max(0, num_best_retained)
         self.bounds = bounds
         self.seed = seed
         self.verbose = verbose
@@ -80,6 +88,7 @@ class CrossEntropyMethod(OptimizerBase):
         # Internal state
         self.rng = np.random.default_rng(seed)
         self.iteration_costs = []  # Track best cost per iteration
+        self.best_solutions_list = []  # Track (cost, solution) tuples of n best
     
     def optimize(self, initial_guess: np.ndarray, controller, **kwargs) -> np.ndarray:
         """Run CEM optimization to find best decision vector.
@@ -87,7 +96,7 @@ class CrossEntropyMethod(OptimizerBase):
         Parameters
         ----------
         initial_guess : np.ndarray
-            Initial mean for sampling distribution (shape: (dim,))
+            Initial mean for sampling distribution (shape: (n,))
         controller : NACMPC
             Controller with evaluate_decision_vector(vec) -> cost method
         **kwargs : dict
@@ -96,7 +105,7 @@ class CrossEntropyMethod(OptimizerBase):
         Returns
         -------
         np.ndarray
-            Optimized decision vector (shape: (dim,))
+            Optimized decision vector (shape: (n,))
         """
         initial_guess = np.asarray(initial_guess, dtype=float)
         dim = len(initial_guess)
@@ -118,18 +127,31 @@ class CrossEntropyMethod(OptimizerBase):
             elif len(std) != dim:
                 raise ValueError(f"initial_std must be scalar or length {dim}, got {len(std)}")
         
-        # Set up bounds
+        # Set up bounds - backwards compatible with scalar or per-dimension
         if self.bounds is None:
             # Default: assume normalized controls [0, 1] for all dimensions
             lower_bounds = np.zeros(dim)
             upper_bounds = np.ones(dim)
         else:
-            lower_bounds, upper_bounds = self.bounds
-            lower_bounds = np.asarray(lower_bounds).flatten()
-            upper_bounds = np.asarray(upper_bounds).flatten()
+            lower, upper = self.bounds
+            lower_bounds = np.atleast_1d(lower).flatten()
+            upper_bounds = np.atleast_1d(upper).flatten()
+            
+            # If scalar bounds provided, broadcast to all dimensions
+            if lower_bounds.size == 1:
+                lower_bounds = np.full(dim, lower_bounds[0])
+            if upper_bounds.size == 1:
+                upper_bounds = np.full(dim, upper_bounds[0])
+            
+            # Validate dimensions
+            if lower_bounds.size != dim:
+                raise ValueError(f"lower_bounds size {lower_bounds.size} != decision_dim {dim}")
+            if upper_bounds.size != dim:
+                raise ValueError(f"upper_bounds size {upper_bounds.size} != decision_dim {dim}")
         
         # Reset iteration tracking
         self.iteration_costs = []
+        self.best_solutions_list = []  # Reset best solutions list
         best_solution = mean.copy()
         best_cost = float('inf')
         
@@ -138,6 +160,7 @@ class CrossEntropyMethod(OptimizerBase):
             print(f"Decision vector dimension: {dim}", flush=True)
             print(f"Population size: {self.population_size}", flush=True)
             print(f"Elite samples: {self.num_elites}", flush=True)
+            print(f"Best solutions retained: {self.num_best_retained}", flush=True)
             print(f"Max iterations: {max_iters}", flush=True)
         
         import time
@@ -163,7 +186,7 @@ class CrossEntropyMethod(OptimizerBase):
                 if verbose and iteration == 0 and idx == 0:
                     print(f"[CEM] First cost type: {type(cost)}, value: {cost}")
                     if not np.isscalar(cost) and hasattr(cost, 'shape'):
-                        raise ValueError(f"Cost is not scalar! shape: {cost.shape}")
+                        raise ValueError(f"Cost is not scalar! shape: {cost.shape}") # was having errors with cost shape
                 costs.append(cost)
             costs = np.array(costs)
             
@@ -171,10 +194,16 @@ class CrossEntropyMethod(OptimizerBase):
                 print(f"[CEM] Costs array shape: {costs.shape}, should be ({self.population_size},)")
                 print(f"[CEM] Costs range: [{costs.min():.1f}, {costs.max():.1f}]")
             
-            # Select elite samples (lowest cost)
+            # Update best solutions list with any new best from this iteration
+            self._update_best_solutions(samples, costs)
+            
+            # Select elite samples from population (lowest cost)
             elite_indices = np.argsort(costs)[:self.num_elites]
-            elite_samples = samples[elite_indices]
-            elite_costs = costs[elite_indices]
+            
+            # Inject retained best solutions into elites (without double-counting)
+            elite_samples, elite_costs = self._inject_best_into_elites(
+                samples, costs, elite_indices
+            )
             
             # Track best solution
             iter_best_idx = np.argmin(costs)
@@ -188,7 +217,11 @@ class CrossEntropyMethod(OptimizerBase):
             if verbose:
                 mean_elite_cost = np.mean(elite_costs)
                 iter_time = time.time() - iter_start
-                print(f"[CEM] Iter {iteration+1}/{max_iters}: Best={best_cost:.1f}, Elite mean={mean_elite_cost:.1f}, Time={iter_time:.1f}s", flush=True)
+                mean_str = np.array2string(mean, precision=3, suppress_small=True, separator=', ')
+                std_str = np.array2string(std, precision=3, suppress_small=True, separator=', ')
+                print(f"[CEM] Iter {iteration+1}/{max_iters}: Best Cost={best_cost:.1f}, Mean Elite Cost={mean_elite_cost:.1f}, Time={iter_time:.1f}s", flush=True)
+                print(f"[CEM] Sampling Mean:\n {mean_str}", flush=True)
+                print(f"[CEM] Sampling Std:\ns {std_str}", flush=True)
             
             # Update distribution based on elite samples
             old_mean = mean.copy()
@@ -266,6 +299,95 @@ class CrossEntropyMethod(OptimizerBase):
                 samples.append(sample)
         
         return np.array(samples)
+    
+    def _update_best_solutions(self, samples: np.ndarray, costs: np.ndarray) -> None:
+        """Update the list of best solutions found so far.
+        
+        Parameters
+        ----------
+        samples : np.ndarray
+            Current population samples (shape: (population_size, dim))
+        costs : np.ndarray
+            Costs for each sample (shape: (population_size,))
+        """
+        if self.num_best_retained == 0:
+            return
+        
+        # Add all samples to consideration
+        for sample, cost in zip(samples, costs):
+            # Check if this solution should be in the best list
+            if len(self.best_solutions_list) < self.num_best_retained:
+                # List not full, add it
+                self.best_solutions_list.append((cost, sample.copy()))
+            else:
+                # Check if better than worst in list
+                worst_idx = np.argmax([c for c, s in self.best_solutions_list])
+                worst_cost = self.best_solutions_list[worst_idx][0]
+                if cost < worst_cost:
+                    # Replace worst with this solution
+                    self.best_solutions_list[worst_idx] = (cost, sample.copy())
+        
+        # Keep list sorted by cost (best first)
+        self.best_solutions_list.sort(key=lambda x: x[0])
+    
+    def _inject_best_into_elites(
+        self,
+        samples: np.ndarray,
+        costs: np.ndarray,
+        elite_indices: np.ndarray
+    ) -> tuple:
+        """Inject retained best solutions into elite set without double-counting.
+        
+        Parameters
+        ----------
+        samples : np.ndarray
+            Current population samples (shape: (population_size, dim))
+        costs : np.ndarray
+            Costs for each sample (shape: (population_size,))
+        elite_indices : np.ndarray
+            Indices of elite samples from population (shape: (num_elites,))
+            
+        Returns
+        -------
+        tuple of (np.ndarray, np.ndarray)
+            (elite_samples, elite_costs) with best solutions injected
+        """
+        if self.num_best_retained == 0 or len(self.best_solutions_list) == 0:
+            # No retention, return original elites
+            return samples[elite_indices], costs[elite_indices]
+        
+        # Start with population elites
+        elite_set = []
+        for idx in elite_indices:
+            elite_set.append((costs[idx], samples[idx]))
+        
+        # Track which retained bests are already in population elites
+        retained_in_pop = set()
+        
+        # Check if any retained best is already in the elite set from population
+        for i, (best_cost, best_sol) in enumerate(self.best_solutions_list):
+            for j, (elite_cost, elite_sol) in enumerate(elite_set):
+                # Check if this is the same solution (within tolerance)
+                if np.allclose(best_sol, elite_sol, rtol=1e-9, atol=1e-12):
+                    retained_in_pop.add(i)
+                    break
+        
+        # Add retained bests that aren't already in population elites
+        num_to_add = 0
+        for i, (best_cost, best_sol) in enumerate(self.best_solutions_list):
+            if i not in retained_in_pop:
+                elite_set.append((best_cost, best_sol.copy()))
+                num_to_add += 1
+        
+        # Sort combined set by cost and take top num_elites
+        elite_set.sort(key=lambda x: x[0])
+        elite_set = elite_set[:self.num_elites]
+        
+        # Extract samples and costs
+        elite_costs = np.array([c for c, s in elite_set])
+        elite_samples = np.array([s for c, s in elite_set])
+        
+        return elite_samples, elite_costs
     
     def get_iteration_history(self) -> np.ndarray:
         """Get best cost at each iteration.
