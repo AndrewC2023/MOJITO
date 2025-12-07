@@ -130,8 +130,11 @@ class Vehicle:
         
         # Extract rotation - try multiple methods in order of preference
         rotation = np.eye(3)
+
+        # TODO: this is highly dependent on the state vector dictionalry from the class
+        # managing the dynamics. mazybe we need to fix this, proabaly rotation idx like position above
         
-        # Method 1: Check if model has quaternion state (SimpleMultirotorQuat)
+        # Check if model has quaternion state (SimpleMultirotorQuat)
         if hasattr(self.model, 'state_map'):
             state_map = self.model.state_map
             if hasattr(state_map, 'quat'):
@@ -148,7 +151,7 @@ class Vehicle:
                 Rz = DCM3D(yaw, "z")
                 rotation = Rz @ Ry @ Rx
         
-        # Method 2: Use DCM indices if provided (for other dynamics models)
+        # Use DCM indices if provided (for other dynamics models)
         elif self._has_dcm:
             # Extract 9 DCM elements and reshape to 3x3 (row-major)
             dcm_data = state_flat[self._dcm_idx]

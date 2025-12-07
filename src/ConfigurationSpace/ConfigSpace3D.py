@@ -35,34 +35,17 @@ class CollisionQueryResult(NamedTuple):
     """
     Complete result of a collision query against configuration space.
     
-    This structure provides all information needed for smooth, continuous cost functions
-    in optimization (MPC, PSO, GA, etc). It allows you to:
+    This structure provides all information needed for smoother cost functions
+    in optimization. It allows you to:
     
-    1. Heavily penalize actual collisions using total_penetration_depth
-       - Accounts for obstacle size (grazing a pebble vs hitting a wall)
-    
+    1. Heavily vary collision penalties using total_penetration_depth
+       - Accounts for obstacle size: grazing a pebble vs hitting a wall
+       Or just hitting a corner versus being inside a wall, or hitting multiple obstacles
+
     2. Create smooth proximity costs to encourage safe distances
        - Access distance to each obstacle even when not colliding
-       - Implement gradual penalties as vehicle approaches obstacles
     
     3. Handle boundary violations with is_out_of_bounds flag
-    
-    Example cost function:
-        result = config_space.query_collision_detailed(vehicle.box)
-        
-        # Collision penalty (discontinuous at 0, but depth provides gradient)
-        collision_cost = result.total_penetration_depth * 1000.0
-        
-        # Proximity penalty (smooth, continuous gradient)
-        proximity_cost = 0.0
-        for obs in result.obstacle_data:
-            if not obs.is_collision and obs.distance < safe_distance:
-                proximity_cost += (safe_distance - obs.distance) ** 2
-        
-        # Boundary penalty
-        boundary_cost = 1000.0 if result.is_out_of_bounds else 0.0
-        
-        total_cost = collision_cost + proximity_cost + boundary_cost
     
     Attributes:
         has_collision: True if any collision detected (obstacles or boundaries)
@@ -86,6 +69,9 @@ class ConfigurationSpace3D:
     Manages a bounded 3D space with obstacles represented as Obstacle objects.
     Provides methods to add/remove obstacles and check for collisions using FCL.
     All methods accept fcl.CollisionObject for collision and distance queries.
+
+    Based heavily on the 2D ConfigurationSpace2D class, but extended to 3D and using the
+    free collision library for geometry checks ratehr than functions in GeometryUtils.
     """
     
     def __init__(self, *args, **kwargs):
@@ -140,25 +126,8 @@ class ConfigurationSpace3D:
         # Initialize obstacle list
         self.obstacles: List[Obstacle] = []
         
-        # Create boundary box and boundary faces for the configuration space
-        self._update_boundary_box()
+        # Create boundary faces for the configuration space
         self._create_boundary_faces()
-    
-    def _update_boundary_box(self):
-        """Update the boundary box representing the field bounds."""
-        center = np.array([
-            (self.xMin + self.xMax) / 2,
-            (self.yMin + self.yMax) / 2,
-            (self.zMin + self.zMax) / 2
-        ])
-        size_x = self.xMax - self.xMin
-        size_y = self.yMax - self.yMin
-        size_z = self.zMax - self.zMin
-        
-        # Create FCL boundary collision object
-        boundary_geom = fcl.Box(size_x, size_y, size_z)
-        boundary_transform = fcl.Transform(np.eye(3), center)
-        self.boundary_collision_object = fcl.CollisionObject(boundary_geom, boundary_transform)
     
     def _validate_dimensions(self):
         """Validate that min < max for all dimensions.
@@ -231,7 +200,6 @@ class ConfigurationSpace3D:
         self.yMax = dimensions[3]
         self.zMin = dimensions[4]
         self.zMax = dimensions[5]
-        self._update_boundary_box()
         self._create_boundary_faces()
         self.obstacles.clear()
     
@@ -315,7 +283,7 @@ class ConfigurationSpace3D:
         Returns:
             bool: True if object is entirely within bounds, False otherwise
         """
-        # Quick check: is center point in bounds?
+        # Quick check: is center point in bounds
         transform = obj.getTransform()
         pos = transform.getTranslation()
         cx, cy, cz = pos[0], pos[1], pos[2]
@@ -570,7 +538,6 @@ class ConfigurationSpace3D:
         self.yMax = 10
         self.zMin = -10
         self.zMax = 10
-        self._update_boundary_box()
         self._create_boundary_faces()
     
     @staticmethod
@@ -644,7 +611,7 @@ class ConfigurationSpace3D:
         Plot the 3D configuration space with boundaries and obstacles.
         
         Visualizes the bounded region and all obstacles (static and dynamic) at a given time.
-        Obstacles are rendered semi-transparent to allow viewing of overlapping structures.
+        Obstacles are rendered semi-transparent to allow viewing of overlapping trajectories.
         
         Args:
             t: Time at which to evaluate dynamic obstacles (default: 0.0)
@@ -661,12 +628,6 @@ class ConfigurationSpace3D:
             
         Returns:
             Matplotlib 3D axes with the plot
-            
-        Example:
-            >>> config_space = ConfigurationSpace3D([0, 100, 0, 100, 0, 50])
-            >>> # Add some obstacles...
-            >>> ax = config_space.plot_configuration_space(t=5.0, obstacle_alpha=0.4)
-            >>> plt.show()
         """
         # Create axes if not provided
         if ax is None:
@@ -705,7 +666,9 @@ class ConfigurationSpace3D:
                 
                 # Extract geometry dimensions based on type
                 geom = obstacle.geometry
-                
+
+
+                # handle the fcl geometries we support
                 if isinstance(geom, fcl.Box):
                     # Box obstacle
                     size = geom.side
@@ -818,20 +781,15 @@ class ConfigurationSpace3D:
                                 **config_space_kwargs) -> plt.Axes:
         """
         Plot vehicle trajectory through configuration space with bounding boxes at sample points.
-        
-        This method visualizes:
-        1. The configuration space (boundaries and obstacles at time t_obstacles)
-        2. The vehicle's trajectory as a line
-        3. The vehicle's bounding box at specified time points
-        
+
         Args:
             trajectory: Array of positions, shape (N, 3) or list of N position arrays [x, y, z]
             times: Optional list of times corresponding to trajectory points.
-                   Used with dynamic obstacles if t_obstacles='from_trajectory'
+                Used with dynamic obstacles if t_obstacles='from_trajectory'
             vehicle_geometry: FCL geometry for the vehicle (e.g., fcl.Box, fcl.Sphere).
-                             Required if show_vehicle_boxes=True
+                Required if show_vehicle_boxes=True
             sample_indices: Indices at which to draw vehicle bounding boxes.
-                           If None, draws at evenly spaced intervals (default: 10 samples)
+                If None, draws at evenly spaced intervals (default: 10 samples)
             ax: Matplotlib 3D axes. If None, creates new figure
             trajectory_color: Color for trajectory line (default: 'blue')
             trajectory_width: Width of trajectory line (default: 2.0)
@@ -839,28 +797,12 @@ class ConfigurationSpace3D:
             vehicle_color: Color for vehicle boxes (default: 'green')
             show_trajectory_line: Whether to show the trajectory line (default: True)
             show_vehicle_boxes: Whether to show vehicle bounding boxes (default: True)
-            t_obstacles: Time at which to show obstacles. Can be:
-                        - float: specific time
-                        - 'from_trajectory': use times from trajectory (requires times parameter)
-                        (default: 0.0)
+            t_obstacles: Time at which to show obstacles (default: 0.0)
             **config_space_kwargs: Additional arguments passed to plot_configuration_space
                                   (e.g., obstacle_alpha, bounds_alpha, etc.)
             
         Returns:
             Matplotlib 3D axes with the plot
-            
-        Example:
-            >>> # Create trajectory
-            >>> trajectory = np.array([[0, 0, 1], [10, 10, 5], [20, 20, 10], [30, 30, 15]])
-            >>> times = [0.0, 1.0, 2.0, 3.0]
-            >>> 
-            >>> # Plot with vehicle boxes at indices 0, 1, 2, 3
-            >>> vehicle_geom = fcl.Box(1.0, 1.0, 0.5)
-            >>> ax = config_space.plot_vehicle_trajectory(
-            ...     trajectory, times=times, vehicle_geometry=vehicle_geom,
-            ...     sample_indices=[0, 1, 2, 3], t_obstacles=2.0
-            ... )
-            >>> plt.show()
         """
         # Convert trajectory to numpy array
         if isinstance(trajectory, list):
@@ -874,14 +816,7 @@ class ConfigurationSpace3D:
             fig = plt.figure(figsize=(12, 10))
             ax = fig.add_subplot(111, projection='3d')
         
-        # Determine obstacle time
-        obs_time = t_obstacles
-        if isinstance(t_obstacles, str) and t_obstacles == 'from_trajectory':
-            if times is None:
-                raise ValueError("times parameter required when t_obstacles='from_trajectory'")
-            obs_time = times[len(times)//2]  # Use middle time
-        
-        ax = self.plot_configuration_space(t=obs_time, ax=ax, **config_space_kwargs)
+        ax = self.plot_configuration_space(t=t_obstacles, ax=ax, **config_space_kwargs)
         
         # Plot trajectory line
         if show_trajectory_line:
@@ -918,11 +853,11 @@ class ConfigurationSpace3D:
                 
                 elif isinstance(vehicle_geometry, fcl.Sphere):
                     radius = vehicle_geometry.radius
-                    u = np.linspace(0, 2 * np.pi, 15)
-                    v = np.linspace(0, np.pi, 15)
-                    x = radius * np.outer(np.cos(u), np.sin(v)) + position[0]
-                    y = radius * np.outer(np.sin(u), np.sin(v)) + position[1]
-                    z = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + position[2]
+                    a = np.linspace(0, 2 * np.pi, 15)
+                    b = np.linspace(0, np.pi, 15)
+                    x = radius * np.outer(np.cos(a), np.sin(b)) + position[0]
+                    y = radius * np.outer(np.sin(a), np.sin(b)) + position[1]
+                    z = radius * np.outer(np.ones(np.size(a)), np.cos(b)) + position[2]
                     ax.plot_surface(x, y, z, alpha=vehicle_alpha, color=vehicle_color, zorder=5)
         
         # Update legend
@@ -936,7 +871,7 @@ class ConfigurationSpace3D:
         return ax
 
 
-# Test main function
+# Test main function (maybe depreciated?)
 if __name__ == "__main__":
 
     print("Testing ConfigurationSpace3D class...")
