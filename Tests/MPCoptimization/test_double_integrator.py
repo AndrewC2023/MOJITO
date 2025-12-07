@@ -58,13 +58,14 @@ class DoubleIntegrator3D:
         pos = state[0:3]
         vel = state[3:6]
         
-        pos_next = pos + vel * self.dt
-        vel_next = vel + u * self.dt
+        # Use the passed timestep parameter, not self.dt
+        pos_next = pos + vel * timestep
+        vel_next = vel + u * timestep
         
         return np.vstack([pos_next, vel_next]).reshape((-1, 1))
 
 # ============================================================================
-# Environment Setup
+# Configuration Space Setup
 # ============================================================================
 
 dim = [0, 10, -2.5, 2.5, -5, 0]  # NED frame
@@ -85,11 +86,11 @@ print(f"Configuration space: {dim}")
 print(f"Obstacles: {len(config_space.obstacles)}")
 
 # ============================================================================
-# Dynamics and Initial Conditions
+# Problem Setup
 # ============================================================================
 
-dt = 0.1
-dynamics = DoubleIntegrator3D(dt=dt, max_accel=5.0)
+physics_dt = 0.1  # Define early for use in dynamics and later calculations
+dynamics = DoubleIntegrator3D(dt=physics_dt, max_accel=5.0)
 
 INIT_POS = np.array([1.0, 0.0, -1.0])
 INIT_VEL = np.array([0.0, 0.0, 0.0])
@@ -104,7 +105,7 @@ print(f"Start: {INIT_POS}, Goal: {goal_position}")
 print(f"Distance: {np.linalg.norm(goal_position - INIT_POS):.2f}m")
 
 # ============================================================================
-# Vehicle
+# Vehicle Class Construction
 # ============================================================================
 
 vehicle_geometry = fcl.Box(0.3, 0.3, 0.3)
@@ -116,7 +117,7 @@ vehicle = Vehicle(
 )
 
 # ============================================================================
-# Cost Function
+# Cost Function - need to define it but arbitrary cost is the idea for this project
 # ============================================================================
 
 class PointMassCost(CostFunction):
@@ -143,6 +144,10 @@ class PointMassCost(CostFunction):
         self.best_cost = float('inf')
         self.best_state = None
     
+    def reset_for_new_trajectory(self):
+        """Reset internal state for new trajectory evaluation."""
+        pass  # No prev_control tracking in this cost function
+    
     def evaluate(self, state, control=None, is_terminal=False, dt=0.1, **kwargs):
         """Evaluate cost with dt-normalized running costs."""
         cost = 0.0
@@ -161,22 +166,22 @@ class PointMassCost(CostFunction):
             control = control.reshape(-1, 1)
             cost += self.control_weight * np.dot(control.flatten(), control.flatten()) * dt
         
-        # Collision costs
+        # Collision costs (integrated over time)
         if 'collision_result' in kwargs:
             collision_result = kwargs['collision_result']
             
             if collision_result.has_collision:
                 if collision_result.is_out_of_bounds:
-                    cost += self.collision_weight * 2.0
+                    cost += self.collision_weight * 2.0 * dt
                 else:
-                    cost += self.collision_weight * (1.0 + collision_result.total_penetration_depth)
+                    cost += self.collision_weight * (1.0 + collision_result.total_penetration_depth) * dt
             
-            # Proximity gradient for smooth optimization
+            # Proximity gradient for smooth optimization (integrated over time)
             if not collision_result.has_collision and collision_result.min_obstacle_distance < float('inf'):
                 safe_distance = 0.5
                 if collision_result.min_obstacle_distance < safe_distance:
                     proximity_factor = (safe_distance - collision_result.min_obstacle_distance) / safe_distance
-                    cost += self.proximity_weight * (proximity_factor ** 2)
+                    cost += self.proximity_weight * (proximity_factor ** 2) * dt
         
         # Terminal costs
         if is_terminal:
@@ -184,7 +189,7 @@ class PointMassCost(CostFunction):
             terminal_vel_cost = self.terminal_vel_weight * np.dot(vel_error.flatten(), vel_error.flatten())
             cost += terminal_pos_cost + terminal_vel_cost
             
-            # Terminal control penalty: encourage u→0 at end to stop accelerating
+            # Terminal control penalty: encourage u0 at end to stop accelerating
             if control is not None:
                 terminal_ctrl_cost = self.terminal_control_weight * np.dot(control.flatten(), control.flatten())
                 cost += terminal_ctrl_cost
@@ -200,12 +205,12 @@ class PointMassCost(CostFunction):
 cost_func = PointMassCost(
     goal_position, 
     goal_velocity,
-    pos_weight=100.0,
-    vel_weight=10.0,
-    control_weight=1.0,
-    terminal_pos_weight=500.0,
-    terminal_vel_weight=1000.0,
-    terminal_control_weight=100.0,
+    pos_weight=50.0,
+    vel_weight=0.1,
+    control_weight=0.1,
+    terminal_pos_weight=5000.0,
+    terminal_vel_weight=2000.0,
+    terminal_control_weight=1.0,
     collision_weight=10000.0,
     proximity_weight=50.0
 )
@@ -214,19 +219,18 @@ cost_func = PointMassCost(
 # Input Function
 # ============================================================================
 
-num_keyframes = 30
-physics_steps = 120
+horizon = 10.0  # seconds
+num_keyframes = 15
 control_dim = 3
-horizon = physics_steps * dt
 
 input_func = SplineInterpolationInput(
     numKeyframes=num_keyframes,
-    totalSteps=physics_steps,
+    totalSteps=int(horizon / physics_dt),  # Only needed for legacy compatibility
     control_dim=control_dim,
     u_min=-5.0,
     u_max=5.0
 )
-print(f"Horizon: {horizon}s, Keyframes: {num_keyframes}")
+print(f"Horizon: {horizon}s, Keyframes: {num_keyframes}, Physics dt: {physics_dt}s")
 
 # ============================================================================
 # Optimizer
@@ -234,13 +238,13 @@ print(f"Horizon: {horizon}s, Keyframes: {num_keyframes}")
 
 decision_dim = num_keyframes * control_dim
 optimizer = CrossEntropyMethod(
-    population_size=200,
+    population_size=500,
     elite_frac=0.15,
     max_iterations=100,
-    epsilon=1e-5,
-    alpha=0.05,
+    epsilon=1e-4,
+    alpha=0.1,
     initial_std=2.5,
-    min_std=0.005,
+    min_std=0.1,
     bounds=(-5.0, 5.0),
     verbose=True
 )
@@ -256,7 +260,7 @@ mpc = NACMPC(
     optimizer=optimizer,
     inputFunction=input_func,
     control_dim=control_dim,
-    physicsSteps=physics_steps,
+    physics_dt=physics_dt,
     numControlKeyframes=num_keyframes,
     dynamicHorizon=False,
     maxHorizon=horizon,
@@ -285,7 +289,6 @@ print("="*80)
 print("\nGenerating trajectory rollout...")
 
 # Set up input function to match MPC evaluation
-input_func.updateTimeStep(dt)
 input_func.updateStartAndEndTimes(0.0, horizon)
 input_func.updateKeyFrameValues(best_decision)
 
@@ -295,14 +298,16 @@ vehicle.set_state(x0.copy())
 trajectory_states.append(vehicle.state.flatten().copy())
 
 t = 0.0
-for step in range(physics_steps):
+rollout_steps = int(horizon / physics_dt)
+for step in range(rollout_steps):
     u = input_func.calculateInput(t)
-    state = vehicle.propagate(dt, u=u)
+    state = vehicle.propagate(physics_dt, u=u)
     trajectory_states.append(state.flatten().copy())
-    t += dt
+    t += physics_dt
 
 trajectory_states = np.array(trajectory_states)
 traj_positions = trajectory_states[:, 0:3]
+traj_velocities = trajectory_states[:, 3:6]
 final_pos = trajectory_states[-1, 0:3]
 final_vel = trajectory_states[-1, 3:6]
 
@@ -445,6 +450,9 @@ ax3.plot([final_pos[0], goal_position[0]], [final_pos[1], goal_position[1]], 'r-
 ax3.set_xlabel('X [m]', fontsize=10, fontweight='bold')
 ax3.set_ylabel('Y [m]', fontsize=10, fontweight='bold')
 ax3.set_title('Top-Down View (X-Y)', fontsize=11, fontweight='bold')
+ax3.set_xlim(x_bounds)
+ax3.set_ylim(y_bounds)
+ax3.set_aspect('equal')
 ax3.grid(True, alpha=0.3)
 ax3.legend(loc='upper left', fontsize=8)
 
@@ -477,12 +485,75 @@ ax4.set_ylim(z_bounds)
 ax4.set_aspect('equal')
 ax4.legend(loc='upper left', fontsize=8)
 
-fig.suptitle('NACMPC Validation - Spline Control with Obstacle Avoidance', fontsize=14, fontweight='bold', y=0.98)
+fig.suptitle('Double Integrator - 3D Views and Projections', fontsize=14, fontweight='bold', y=0.98)
 
-output_path = Path(__file__).parent / "double_integrator_trajectory.png"
+output_path = Path(__file__).parent / "double_integrator_3d_views.png"
 plt.tight_layout()
 plt.savefig(output_path, dpi=150, bbox_inches='tight')
-print(f"\nVisualization saved: {output_path}")
+print(f"\n3D views saved: {output_path}")
+plt.close()
+
+# ============================================================================
+# Visualization - Goal Tracking
+# ============================================================================
+
+fig2 = plt.figure(figsize=(16, 10))
+
+# Position vs time with goal lines
+ax1 = fig2.add_subplot(221)
+time_vec = np.linspace(0, horizon, len(traj_positions))
+ax1.plot(time_vec, traj_positions[:, 0], 'b-', linewidth=2, label='X', alpha=0.8)
+ax1.plot(time_vec, traj_positions[:, 1], 'g-', linewidth=2, label='Y', alpha=0.8)
+ax1.plot(time_vec, traj_positions[:, 2], 'r-', linewidth=2, label='Z', alpha=0.8)
+ax1.axhline(goal_position[0], color='b', linestyle='--', alpha=0.4, linewidth=1.5, label='X goal')
+ax1.axhline(goal_position[1], color='g', linestyle='--', alpha=0.4, linewidth=1.5, label='Y goal')
+ax1.axhline(goal_position[2], color='r', linestyle='--', alpha=0.4, linewidth=1.5, label='Z goal')
+ax1.set_xlabel('Time [s]', fontsize=10, fontweight='bold')
+ax1.set_ylabel('Position [m]', fontsize=10, fontweight='bold')
+ax1.set_title('Position vs Time (Goal Tracking)', fontsize=11, fontweight='bold')
+ax1.legend(loc='best', fontsize=8, ncol=2)
+ax1.grid(True, alpha=0.3)
+
+# Velocity vs time
+ax2 = fig2.add_subplot(222)
+ax2.plot(time_vec, traj_velocities[:, 0], 'b-', linewidth=2, label='Vx', alpha=0.8)
+ax2.plot(time_vec, traj_velocities[:, 1], 'g-', linewidth=2, label='Vy', alpha=0.8)
+ax2.plot(time_vec, traj_velocities[:, 2], 'r-', linewidth=2, label='Vz', alpha=0.8)
+ax2.axhline(0, color='k', linestyle='--', alpha=0.3, linewidth=1)
+ax2.set_xlabel('Time [s]', fontsize=10, fontweight='bold')
+ax2.set_ylabel('Velocity [m/s]', fontsize=10, fontweight='bold')
+ax2.set_title('Velocity vs Time', fontsize=11, fontweight='bold')
+ax2.legend(loc='best', fontsize=8)
+ax2.grid(True, alpha=0.3)
+
+# Position error magnitude
+ax3 = fig2.add_subplot(223)
+pos_error_mag = np.linalg.norm(traj_positions - goal_position, axis=1)
+ax3.plot(time_vec, pos_error_mag, 'r-', linewidth=2, alpha=0.8)
+ax3.axhline(0.5, color='orange', linestyle='--', alpha=0.5, linewidth=1.5, label='Success threshold (0.5m)')
+ax3.set_xlabel('Time [s]', fontsize=10, fontweight='bold')
+ax3.set_ylabel('Position Error [m]', fontsize=10, fontweight='bold')
+ax3.set_title('Position Error Magnitude', fontsize=11, fontweight='bold')
+ax3.legend(loc='best', fontsize=8)
+ax3.grid(True, alpha=0.3)
+
+# Velocity magnitude
+ax4 = fig2.add_subplot(224)
+vel_mag = np.linalg.norm(traj_velocities, axis=1)
+ax4.plot(time_vec, vel_mag, 'b-', linewidth=2, alpha=0.8)
+ax4.axhline(0.5, color='orange', linestyle='--', alpha=0.5, linewidth=1.5, label='Success threshold (0.5m/s)')
+ax4.set_xlabel('Time [s]', fontsize=10, fontweight='bold')
+ax4.set_ylabel('Velocity Magnitude [m/s]', fontsize=10, fontweight='bold')
+ax4.set_title('Velocity Magnitude', fontsize=11, fontweight='bold')
+ax4.legend(loc='best', fontsize=8)
+ax4.grid(True, alpha=0.3)
+
+fig2.suptitle('Double Integrator - Goal Tracking Performance', fontsize=14, fontweight='bold', y=0.98)
+
+output_path2 = Path(__file__).parent / "double_integrator_tracking.png"
+plt.tight_layout()
+plt.savefig(output_path2, dpi=150, bbox_inches='tight')
+print(f"Tracking plots saved: {output_path2}")
 plt.close()
 
 # ============================================================================
@@ -502,7 +573,7 @@ if cost_func.best_state:
     print(f"Velocity: {final_vel_mag:.4f}m/s (tolerance: {velocity_tolerance}m/s)")
     
     if success:
-        print(f"✓ TEST PASSED - NACMPC framework validated")
+        print(f"TEST PASSED - NACMPC framework validated")
     else:
-        print(f"✗ TEST FAILED - Tolerance not met")
+        print(f" TEST FAILED - Tolerance not met")
     print(f"{'='*80}\n")
