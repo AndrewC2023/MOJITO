@@ -1,4 +1,4 @@
-"""Test complete flow: 1D decision vector → multiple control dimensions → cost function."""
+"""Test complete flow: 1D decision vector multiple control dimensions cost function."""
 
 import numpy as np
 import sys
@@ -28,7 +28,7 @@ input_func.updateStartAndEndTimes(0.0, 5.0)
 print(f"Configuration:")
 print(f"  Control dimensions: {control_dim} (4 rotor thrusts)")
 print(f"  Keyframes: {num_keyframes}")
-print(f"  Decision vector size: {num_keyframes * control_dim} = {num_keyframes} × {control_dim}")
+print(f"  Decision vector size: {num_keyframes * control_dim} = {num_keyframes} by {control_dim}")
 
 # Step 1: Optimizer provides 1D decision vector
 # Format: [kf0_u0, kf0_u1, kf0_u2, kf0_u3, kf1_u0, kf1_u1, kf1_u2, kf1_u3, kf2_u0, ...]
@@ -90,14 +90,14 @@ for name, InputClass in [
     u_mid = inp.calculateInput(2.5)
     
     print(f"{name}:")
-    print(f"  ✓ Accepts 1D vector: {decision_vector_1d.shape}")
-    print(f"  ✓ Reshapes internally: {inp.keyframeValues.shape}")
-    print(f"  ✓ Returns full control: {u_mid.shape} = {u_mid}")
+    print(f"  Accepts 1D vector: {decision_vector_1d.shape}")
+    print(f"  Reshapes internally: {inp.keyframeValues.shape}")
+    print(f"  Returns full control: {u_mid.shape} = {u_mid}")
 
 print(f"\n=== Summary ===")
-print(f"✓ Optimizer provides: flat 1D array of size (num_keyframes × control_dim)")
-print(f"✓ Input function automatically reshapes to (num_keyframes, control_dim)")
-print(f"✓ Separate interpolator created for EACH control dimension")
-print(f"✓ calculateInput() returns full control_dim vector at any time")
-print(f"✓ Cost function receives complete control vector")
-print(f"\n✓ Everything already works correctly for 4-rotor quadrotor!")
+print(f"Optimizer provides: flat 1D array of size (num_keyframes by control_dim)")
+print(f"Input function automatically reshapes to (num_keyframes, control_dim)")
+print(f"Separate interpolator created for EACH control dimension")
+print(f"calculateInput() returns full control_dim vector at any time")
+print(f"Cost function receives complete control vector")
+print(f"\nEverything already works correctly for 4-rotor quadrotor!")

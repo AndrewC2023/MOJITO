@@ -1,5 +1,7 @@
 """
-Example script demonstrating the 3D plotting capabilities of ConfigurationSpace3D.
+Test script demonstrating the 3D plotting capabilities of ConfigurationSpace3D.
+
+Refer to this for plotting later on
 
 This script shows how to:
 1. Visualize the configuration space with boundaries and obstacles
@@ -157,16 +159,16 @@ def example_3_vehicle_trajectory():
     
     # Create a vehicle trajectory (navigate around obstacles)
     trajectory_points = np.array([
-        [10, 10, 10],    # Start
+        [10, 10, 10],
         [20, 15, 15],
-        [30, 10, 20],    # Go around building 1
+        [30, 10, 20],
         [45, 20, 25],
         [50, 40, 30],
-        [60, 55, 30],    # Approach building 2
-        [75, 55, 25],    # Go around building 2
+        [60, 55, 30],
+        [75, 55, 25],
         [85, 75, 20],
         [90, 85, 15],
-        [95, 90, 10],    # End
+        [95, 90, 10],
     ])
     
     times = np.linspace(0, 9, len(trajectory_points))
@@ -209,7 +211,7 @@ def example_3_vehicle_trajectory():
         
         result = config_space.query_collision_detailed(vehicle_obj, t=t)
         if result.has_collision:
-            print(f"  ⚠ Collision at waypoint {i} (t={t:.2f}s): "
+            print(f"  Collision at waypoint {i} (t={t:.2f}s): "
                   f"{result.num_collisions} obstacles, "
                   f"penetration depth: {result.total_penetration_depth:.3f}m")
             collision_detected = True
@@ -277,21 +279,13 @@ if __name__ == "__main__":
     print("ConfigurationSpace3D Plotting Examples")
     print("="*70 + "\n")
     
-    # Run examples non-interactively, saving plots to image files
-    try:
-        example_1_basic_configuration_space()
-        example_2_dynamic_obstacles()
-        example_3_vehicle_trajectory()
-        example_4_rotated_obstacles()
+    example_1_basic_configuration_space()
+    example_2_dynamic_obstacles()
+    example_3_vehicle_trajectory()
+    example_4_rotated_obstacles()
 
-        print("\n" + "="*70)
-        print("All examples completed successfully!")
-        print("Saved figures: config_space_example1-4.png in the Tests directory.")
-        print("="*70 + "\n")
+    print("\n" + "="*70)
+    print("All examples completed successfully!")
+    print("Saved figures: config_space_example1-4.png in the Tests directory.")
+    print("="*70 + "\n")
 
-    except KeyboardInterrupt:
-        print("\n\nExamples interrupted by user.")
-    except Exception as e:
-        print(f"\n\nError running examples: {e}")
-        import traceback
-        traceback.print_exc()

@@ -99,11 +99,11 @@ print(" Flattened input works correctly")
 
 # Test dimension reduction benefit
 print("\n--- Dimension Reduction Analysis ---")
-print(f"Full control sequence (100 steps × 4 dims): {100 * control_dim} parameters")
-print(f"Piecewise constant (5 keyframes × 4 dims): {num_keyframes * control_dim} parameters")
+print(f"Full control sequence (100 steps by 4 dims): {100 * control_dim} parameters")
+print(f"Piecewise constant (5 keyframes by 4 dims): {num_keyframes * control_dim} parameters")
 print(f"   Reduction: {100 * control_dim / (num_keyframes * control_dim):.1f}x")
 print(f"\nWith smooth splines, could use even fewer keyframes (e.g., 3):")
-print(f"  3 keyframes × 4 dims: {3 * control_dim} parameters")
+print(f"  3 keyframes by 4 dims: {3 * control_dim} parameters")
 print(f"   Reduction: {100 * control_dim / (3 * control_dim):.1f}x")
 
 print("\n All tests passed!")

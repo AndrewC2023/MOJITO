@@ -208,9 +208,9 @@ def test_collision_at_state(config_file: Path):
         
         # Validate result
         if collision_result.has_collision == should_collide:
-            print(f"\n✓ TEST PASSED: Collision detection {'CORRECT' if should_collide else 'correctly no collision'}")
+            print(f"\nTEST PASSED: Collision detection {'CORRECT' if should_collide else 'correctly no collision'}")
         else:
-            print(f"\n✗ TEST FAILED: Expected collision={should_collide}, got collision={collision_result.has_collision}")
+            print(f"\n TEST FAILED: Expected collision={should_collide}, got collision={collision_result.has_collision}")
         
         # Calculate manual distance check
         vehicle_center = full_state[v_smap_quat.ned_pos]

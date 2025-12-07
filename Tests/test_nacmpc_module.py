@@ -52,7 +52,7 @@ obstacle_geom = fcl.Box(1.0, 1.0, 1.0)
 obstacle_tf = fcl.Transform(np.eye(3), [5.0, 0.0, -2.5])
 config_space.add_obstacle(StaticObstacle(obstacle_geom, obstacle_tf))
 
-print(f"✓ ConfigSpace created with {config_space.get_num_obstacles()} obstacle(s)")
+print(f"ConfigSpace created with {config_space.get_num_obstacles()} obstacle(s)")
 
 # Create dynamics
 config_file = root_dir / "Tests" / "MPCoptimization" / "SmallQuadrotor.yaml"
@@ -71,7 +71,7 @@ dynamics.set_initial_conditions(
 dynamics.vehicle.takenoff = True
 
 initial_state = dynamics.vehicle.state.copy()
-print(f"✓ Dynamics initialized, state shape: {initial_state.shape}")
+print(f"Dynamics initialized, state shape: {initial_state.shape}")
 
 # Create vehicle
 vehicle_geometry = fcl.Box(0.3, 0.3, 0.1)
@@ -81,7 +81,7 @@ vehicle = Vehicle(
     initial_state=initial_state,
     state_indices={'position': [4, 5, 6]}
 )
-print(f"✓ Vehicle created")
+print(f"Vehicle created")
 
 # Define cost function
 goal_position = np.array([8.0, 0.0, -3.0])
@@ -134,7 +134,7 @@ class QuadCostFunction(CostFunction):
         return state_cost + control_cost + collision_cost
 
 cost_func = QuadCostFunction(goal_state_12dof, Q, R)
-print(f"✓ Cost function defined")
+print(f"Cost function defined")
 
 # Create input function (5 keyframes)
 num_keyframes = 5
@@ -149,7 +149,7 @@ input_func = SplineInterpolationInput(
     u_min=0.0,
     u_max=1.0
 )
-print(f"✓ Input function created: {num_keyframes} keyframes")
+print(f"Input function created: {num_keyframes} keyframes")
 
 # Create optimizer
 optimizer = CrossEntropyMethod(
@@ -160,7 +160,7 @@ optimizer = CrossEntropyMethod(
     bounds=(np.zeros(num_keyframes * control_dim), np.ones(num_keyframes * control_dim)),
     verbose=False
 )
-print(f"✓ Optimizer created")
+print(f"Optimizer created")
 
 # Create NACMPC controller
 mpc = NACMPC(
@@ -175,13 +175,13 @@ mpc = NACMPC(
     maxHorizon=horizon,
     debug=False
 )
-print(f"✓ NACMPC controller created")
+print(f"NACMPC controller created")
 print(f"  Horizon: {mpc.maxHorizon}s (fixed)")
-print(f"  Physics steps: {mpc.physicsSteps}")
-print(f"  dt per step: {mpc.maxHorizon / mpc.physicsSteps:.3f}s")
+print(f"  Physics dt: {mpc.physics_dt}s")
+print(f"  Total steps: {int(mpc.maxHorizon / mpc.physics_dt)}")
 print(f"  Decision vector dimension: {num_keyframes * control_dim}")
 
-print("\n✓✓✓ TEST 1 PASSED: NACMPC initialization successful")
+print("\nTEST 1 PASSED: NACMPC initialization successful")
 
 # ============================================================================
 # TEST 2: Decision Vector Decoding
@@ -197,7 +197,7 @@ print(f"Decision vector range: [{decision_vector.min():.3f}, {decision_vector.ma
 
 # Update input function with decision vector
 mpc.inputFunction.updateKeyFrameValues(decision_vector)
-print(f"✓ Input function updated with decision vector")
+print(f"Input function updated with decision vector")
 
 # Sample controls at various times
 test_times = np.linspace(0.0, horizon, 10)
@@ -206,7 +206,7 @@ for i, t in enumerate(test_times[:3]):  # Just show first 3
     print(f"  t={t:.2f}s: control shape={control.shape}, values={control}")
     assert control.shape == (control_dim,), f"Control shape mismatch: {control.shape}"
 
-print("\n✓✓✓ TEST 2 PASSED: Decision vector decoding works correctly")
+print("\nTEST 2 PASSED: Decision vector decoding works correctly")
 
 # ============================================================================
 # TEST 3: Dynamics Rollout
@@ -226,7 +226,7 @@ rollout_costs = []
 
 time = 0.0
 current_state = initial_state.copy()
-dt_rollout = mpc.maxHorizon / mpc.physicsSteps
+dt_rollout = mpc.physics_dt
 
 for step in range(5):  # Just 5 steps for testing
     # Get control
@@ -261,11 +261,11 @@ for step in range(5):  # Just 5 steps for testing
     rollout_states.append(new_state.copy())
     time += dt_rollout
 
-print(f"\n✓ Rollout completed: {len(rollout_states)} states, {len(rollout_controls)} controls")
+print(f"\nRollout completed: {len(rollout_states)} states, {len(rollout_controls)} controls")
 print(f"  Total cost: {sum(rollout_costs):.1f}")
 print(f"  All state shapes: {[s.shape for s in rollout_states[:3]]}")  # Show first 3
 
-print("\n✓✓✓ TEST 3 PASSED: Dynamics rollout with collision detection works")
+print("\nTEST 3 PASSED: Dynamics rollout with collision detection works")
 
 # ============================================================================
 # TEST 4: Cost Function Evaluation with Different States
@@ -290,7 +290,7 @@ cost_goal = cost_func.evaluate(goal_state, control_test, 0.0, vehicle=vehicle, c
 print(f"Cost at goal state: {cost_goal:.2f}")
 
 assert cost_initial > cost_goal, "Cost should be higher at initial state than goal"
-print(f"✓ Cost is higher at initial state ({cost_initial:.1f}) than goal ({cost_goal:.1f})")
+print(f"Cost is higher at initial state ({cost_initial:.1f}) than goal ({cost_goal:.1f})")
 
 # Test at collision state (inside obstacle)
 collision_state = initial_state.copy()
@@ -309,9 +309,9 @@ cost_collision = cost_func.evaluate(collision_state, control_test, 0.0, vehicle=
 print(f"Cost at collision state: {cost_collision:.2f}")
 
 assert cost_collision > cost_initial, "Cost should be much higher when colliding"
-print(f"✓ Cost is very high at collision state ({cost_collision:.1f})")
+print(f"Cost is very high at collision state ({cost_collision:.1f})")
 
-print("\n✓✓✓ TEST 4 PASSED: Cost function responds correctly to state changes")
+print("\nTEST 4 PASSED: Cost function responds correctly to state changes")
 
 # ============================================================================
 # TEST 5: Evaluate Decision Vector (Full MPC Evaluation)
@@ -336,7 +336,7 @@ print(f"Total cost from hover controls: {total_cost:.2f}")
 assert isinstance(total_cost, (float, np.floating)), f"Cost should be scalar, got {type(total_cost)}"
 assert not np.isnan(total_cost), "Cost should not be NaN"
 assert not np.isinf(total_cost), "Cost should not be infinite"
-print(f"✓ Cost is valid scalar: {total_cost:.2f}")
+print(f"Cost is valid scalar: {total_cost:.2f}")
 
 # Try a different decision vector
 aggressive_decision = np.full(num_keyframes * control_dim, 0.8)
@@ -345,9 +345,9 @@ print(f"Total cost from aggressive controls: {total_cost_aggressive:.2f}")
 
 # Costs should be different
 assert abs(total_cost - total_cost_aggressive) > 1.0, "Different controls should give different costs"
-print(f"✓ Different decision vectors produce different costs")
+print(f"Different decision vectors produce different costs")
 
-print("\n✓✓✓ TEST 5 PASSED: Full MPC evaluation works correctly")
+print("\nTEST 5 PASSED: Full MPC evaluation works correctly")
 
 # ============================================================================
 # TEST 6: Different Input Functions
@@ -371,7 +371,7 @@ mpc_pwc = NACMPC(
     optimizer=optimizer,
     inputFunction=pwc_input,
     control_dim=control_dim,
-    physicsSteps=physics_steps,
+    physics_dt=0.1,
     numControlKeyframes=num_keyframes,  # MUST match pwc_input.numKeyframes!
     dynamicHorizon=False,
     maxHorizon=horizon,
@@ -382,7 +382,7 @@ vehicle.set_state(initial_state)
 mpc_pwc._x0 = initial_state.copy()
 mpc_pwc.cost_context = {'vehicle': vehicle, 'config_space': config_space}
 cost_pwc = mpc_pwc.evaluate_decision_vector(hover_decision)
-print(f"✓ PiecewiseConstantInput: cost={cost_pwc:.2f}")
+print(f"PiecewiseConstantInput: cost={cost_pwc:.2f}")
 
 # Test with LinearInterpolationInput
 linear_input = LinearInterpolationInput(
@@ -399,7 +399,7 @@ mpc_linear = NACMPC(
     optimizer=optimizer,
     inputFunction=linear_input,
     control_dim=control_dim,
-    physicsSteps=physics_steps,
+    physics_dt=0.1,
     numControlKeyframes=num_keyframes,  # MUST match linear_input.numKeyframes!
     dynamicHorizon=False,
     maxHorizon=horizon,
@@ -410,12 +410,12 @@ vehicle.set_state(initial_state)
 mpc_linear._x0 = initial_state.copy()
 mpc_linear.cost_context = {'vehicle': vehicle, 'config_space': config_space}
 cost_linear = mpc_linear.evaluate_decision_vector(hover_decision)
-print(f"✓ LinearInterpolationInput: cost={cost_linear:.2f}")
+print(f"LinearInterpolationInput: cost={cost_linear:.2f}")
 
 # Test with SplineInterpolationInput (already tested above)
-print(f"✓ SplineInterpolationInput: cost={total_cost:.2f} (from TEST 5)")
+print(f"SplineInterpolationInput: cost={total_cost:.2f} (from TEST 5)")
 
-print("\n✓✓✓ TEST 6 PASSED: All input function types work with NACMPC")
+print("\nTEST 6 PASSED: All input function types work with NACMPC")
 
 # ============================================================================
 # TEST 7: Dimension Validation Throughout Pipeline
@@ -460,24 +460,24 @@ assert euler_test.shape == (3,), f"Euler shape wrong: {euler_test.shape}"
 assert rates_test.shape == (3,), f"Rates shape wrong: {rates_test.shape}"
 assert state_12dof_test.shape == (12,), f"12-DOF state shape wrong: {state_12dof_test.shape}"
 
-print("\n✓ All dimensions correct throughout pipeline")
+print("\nAll dimensions correct throughout pipeline")
 
-print("\n✓✓✓ TEST 7 PASSED: Dimension validation successful")
+print("\nTEST 7 PASSED: Dimension validation successful")
 
 # ============================================================================
 # SUMMARY
 # ============================================================================
 print("\n" + "="*80)
-print("✓✓✓ ALL NACMPC MODULE TESTS PASSED ✓✓✓")
+print("ALL NACMPC MODULE TESTS PASSED ")
 print("="*80)
 print("\nValidated Components:")
-print("1. ✓ NACMPC initialization with all parameters")
-print("2. ✓ Decision vector decoding via input functions")
-print("3. ✓ Dynamics rollout with collision detection")
-print("4. ✓ Cost function evaluation at different states")
-print("5. ✓ Full MPC evaluation pipeline (evaluate_decision_vector)")
-print("6. ✓ All three input function types (PWC, Linear, Spline)")
-print("7. ✓ Array dimensions throughout entire pipeline")
+print("1. NACMPC initialization with all parameters")
+print("2. Decision vector decoding via input functions")
+print("3. Dynamics rollout with collision detection")
+print("4. Cost function evaluation at different states")
+print("5. Full MPC evaluation pipeline (evaluate_decision_vector)")
+print("6. All three input function types (PWC, Linear, Spline)")
+print("7. Array dimensions throughout entire pipeline")
 print("\n" + "="*80)
 print("READY FOR FULL TRAJECTORY OPTIMIZATION")
 print("="*80)

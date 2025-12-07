@@ -23,7 +23,7 @@ print("="*80)
 # Configuration setup
 dim = [0, 10, -2.5, 2.5, -5, 0]  # xMin, xMax, yMin, yMax, zMin, zMax (NED)
 config_space = ConfigurationSpace3D(dim)
-print(f"\n✓ ConfigSpace created: {dim}")
+print(f"\nConfigSpace created: {dim}")
 
 # Build wall with slit
 slit_width = 0.25
@@ -59,7 +59,7 @@ top_geom = fcl.Box(wall_thickness, slit_width, upper_z_height)
 top_tf = fcl.Transform(np.eye(3), [x_center, y_mid, z_mid + 0.5 * slit_height + 0.5 * upper_z_height])
 config_space.add_obstacle(StaticObstacle(top_geom, top_tf))
 
-print(f"✓ Wall with slit created: {config_space.get_num_obstacles()} obstacles")
+print(f"Wall with slit created: {config_space.get_num_obstacles()} obstacles")
 print(f"  Slit dimensions: {slit_width}m wide x {slit_height}m tall")
 print(f"  Slit center: x={x_center}, y={y_mid}, z={z_mid}")
 
@@ -81,7 +81,7 @@ QuadDynamics.set_initial_conditions(
 QuadDynamics.vehicle.takenoff = True
 
 x0 = QuadDynamics.vehicle.state.copy()
-print(f"\n✓ Quad dynamics initialized")
+print(f"\nQuad dynamics initialized")
 print(f"  State length: {len(x0)}")
 print(f"  Initial NED position: {x0[v_smap_quat.ned_pos]}")
 
@@ -113,18 +113,18 @@ dcm = Rz @ Ry @ Rx
 ned_pos = x0[v_smap_quat.ned_pos]
 vehicle.collision_object.setTransform(fcl.Transform(dcm, ned_pos))
 
-print(f"✓ Vehicle created with geometry: {vehicle_geometry.side}")
+print(f"Vehicle created with geometry: {vehicle_geometry.side}")
 
 # Check initial collision
 collision_result = config_space.query_collision_detailed(vehicle.collision_object)
-print(f"\n✓ Initial state collision check:")
+print(f"\nInitial state collision check:")
 print(f"  has_collision: {collision_result.has_collision}")
 print(f"  is_out_of_bounds: {collision_result.is_out_of_bounds}")
 print(f"  min_obstacle_distance: {collision_result.min_obstacle_distance:.4f}m")
 
 if collision_result.has_collision:
-    print(f"\n✗ ERROR: Initial state has collision!")
+    print(f"\n ERROR: Initial state has collision!")
     sys.exit(1)
 
-print(f"\n✓ Setup validation PASSED - ready for optimization!")
+print(f"\nSetup validation PASSED - ready for optimization!")
 print("="*80)
