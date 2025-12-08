@@ -1,7 +1,7 @@
 """
-Quadrotor MPC - NACMPC Framework with LQR Inner Loop
+Quadrotor MPC - NBBMPC Framework with LQR Inner Loop
 
-Validates NACMPC with a quadrotor using LQR for stabilization.
+Validates NBBMPC with a quadrotor using LQR for stabilization.
 MPC plans position commands, LQR tracks them with motor control.
 """
 import numpy as np
@@ -25,10 +25,10 @@ import gncpy.math as gmath
 
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
 from Vehicles.Vehicle import Vehicle
-from Controls.NACMPC import NACMPC
+from Controls.NBBMPC import NBBMPC
 from Optimizers.OptimizerBase import CostFunction
 from Optimizers.CrossEntropyMethod import CrossEntropyMethod
-from Controls.NACMPC import PiecewiseConstantInput  # Zero-order hold
+from Controls.NBBMPC import PiecewiseConstantInput  # Zero-order hold
 
 # ============================================================================
 # Interrupt Handler for Saving Current Best on Ctrl C
@@ -659,10 +659,10 @@ print(f"Per-dimension bounds: X[0,10], Y[-2.5,2.5], Z[-5,0]")
 print(f"Decision vector dimension: {decision_dim} ({num_keyframes} keyframes x {control_dim} dims)")
 
 # ============================================================================
-# NACMPC Controller construction
+# NBBMPC Controller construction
 # ============================================================================
 
-mpc = NACMPC(
+mpc = NBBMPC(
     vehicle=vehicle,
     costFunction=cost_func,
     optimizer=optimizer,
@@ -673,7 +673,7 @@ mpc = NACMPC(
     dynamicHorizon=False,
     maxHorizon=horizon,
     cost_context={'vehicle': vehicle, 'config_space': config_space},
-    verbose=False  # Set to True to see detailed NACMPC debug prints
+    verbose=False  # Set to True to see detailed NBBMPC debug prints
 )
 
 mpc._x0 = x0.copy()

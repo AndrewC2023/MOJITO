@@ -16,7 +16,7 @@ A sampling-based Model Predictive Control (MPC) framework for robotic systems wi
 ```
 src/
     ConfigurationSpace/   # 3D configuration space with FCL collision detection
-    Controls/             # NACMPC controller and input function classes
+    Controls/             # NBBMPC controller and input function classes
     Optimizers/           # Cross-Entropy Method and optimizer base classes
     Utils/                # Geometry utilities (quaternions, rotations)
     Vehicles/             # Vehicle abstraction layer for dynamics and collision geometry

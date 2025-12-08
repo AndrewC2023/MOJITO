@@ -5,7 +5,7 @@ class CostFunction:
     """Base class for cost functions used in optimization.
 
     The cost function is intentionally agnostic to the particular optimizer.
-    It is called by :class:`NACMPC` during trajectory rollout and can use
+    It is called by :class:`NBBMPC` during trajectory rollout and can use
     arbitrary information about the state, control, time, configuration space,
     etc. via ``**kwargs``.
     """
@@ -34,7 +34,7 @@ class CostFunction:
 
 
 class OptimizerBase:
-    """Base class for optimizers used with NACMPC.
+    """Base class for optimizers used with NBBMPC.
 
     The optimizer treats the controller as a black-box cost oracle. It does
     **not** know about dynamics or constraints directly; instead it proposes a
@@ -51,7 +51,7 @@ class OptimizerBase:
             Initial decision vector (e.g. concatenated keyframe values and, if
             enabled, horizon).
         controller : object
-            NACMPC-like object exposing ``evaluate_decision_vector(vec, **kw)``
+            NBBMPC-like object exposing ``evaluate_decision_vector(vec, **kw)``
             that returns a scalar cost for a proposed decision vector.
         **kwargs : dict
             Extra options for the optimizer (max iterations, seeds, etc.).

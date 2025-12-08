@@ -97,7 +97,7 @@ class CrossEntropyMethod(OptimizerBase):
         ----------
         initial_guess : np.ndarray
             Initial mean for sampling distribution (shape: (n,))
-        controller : NACMPC
+        controller : NBBMPC
             Controller with evaluate_decision_vector(vec) -> cost method
         **kwargs : dict
             Optional overrides for CEM parameters

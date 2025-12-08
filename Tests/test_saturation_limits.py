@@ -9,7 +9,7 @@ from pathlib import Path
 root_dir = Path(__file__).parent.parent
 sys.path.append(str(root_dir / "src"))
 
-from Controls.NACMPC import PiecewiseConstantInput, LinearInterpolationInput, SplineInterpolationInput
+from Controls.NBBMPC import PiecewiseConstantInput, LinearInterpolationInput, SplineInterpolationInput
 
 # Test with keyframes that would violate saturation limits
 num_keyframes = 5

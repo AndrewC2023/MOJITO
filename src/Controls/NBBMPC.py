@@ -12,7 +12,7 @@ from Utils.GeometryUtils import DCM3D
 
 
 class inputFunction:
-    """this is a class that defines the ionterface for input functions used in NACMPC
+    """this is a class that defines the ionterface for input functions used in NBBMPC
         to reduce dimentions we can have the input function define how to map from keyframes to full control inputs"""
     def __init__(self, numKeyframes: int, totalSteps: int, **kwargs):
         self.numKeyframes = numKeyframes
@@ -405,7 +405,7 @@ class SplineInterpolationInput(inputFunction):
         return np.clip(control, self.u_min, self.u_max)
 
 
-class NACMPC:
+class NBBMPC:
     """Nonlinear Arbitrary Cost Model Predictive Controller (NAC-MPC).
 
     This class owns the dynamics rollout and cost evaluation. Optimizers see
@@ -451,14 +451,14 @@ class NACMPC:
         if hasattr(self.inputFunction, 'numKeyframes'):
             if self.numControlKeyframes != self.inputFunction.numKeyframes:
                 raise ValueError(
-                    f"NACMPC numControlKeyframes ({self.numControlKeyframes}) MUST match "
+                    f"NBBMPC numControlKeyframes ({self.numControlKeyframes}) MUST match "
                     f"inputFunction.numKeyframes ({self.inputFunction.numKeyframes})! "
                     f"Decision vector will have {self.numControlKeyframes * self.control_dim} values, "
                     f"but inputFunction expects {self.inputFunction.numKeyframes * self.control_dim} values."
                 )
         
         if self.debug:
-            print(f"[NACMPC.__init__] control_dim={self.control_dim}, numKeyframes={self.numControlKeyframes}, physics_dt={self.physics_dt}")
+            print(f"[NBBMPC.__init__] control_dim={self.control_dim}, numKeyframes={self.numControlKeyframes}, physics_dt={self.physics_dt}")
 
     # public method used by user code 
 
@@ -504,7 +504,7 @@ class NACMPC:
             self.costFunction.reset_for_new_trajectory()
         
         if self.verbose and self.eval_count == 1:
-            print(f"\n[NACMPC DIMENSION VALIDATION]")
+            print(f"\n[NBBMPC DIMENSION VALIDATION]")
             print(f"  decision_vector shape: {decision_vector.shape}")
             print(f"  expected: (1 + {self.numControlKeyframes} * {self.control_dim},) = ({1 + self.numControlKeyframes * self.control_dim},)")
 
@@ -571,7 +571,7 @@ class NACMPC:
             u = self.inputFunction.calculateInput(t)
             
             if self.verbose and self.eval_count == 1 and step == 0:
-                print(f"\n[NACMPC Step 0 Debug]")
+                print(f"\n[NBBMPC Step 0 Debug]")
                 print(f"  Input function returns u shape: {u.shape}, values: {u.flatten()}")
                 print(f"  About to call vehicle.propagate(dt={dt}, u=u)")
                 print(f"  Vehicle state BEFORE propagate: {self.vehicle.state.flatten()}")
@@ -585,7 +585,7 @@ class NACMPC:
                 print(f"  Vehicle.state AFTER propagate: {self.vehicle.state.flatten()}")
             
             if self.verbose and self.eval_count == 1 and step == 1:
-                print(f"\n[NACMPC Step 1 Debug]")
+                print(f"\n[NBBMPC Step 1 Debug]")
                 print(f"  Vehicle state BEFORE propagate: {self.vehicle.state.flatten()}")
                 u_step1 = self.inputFunction.calculateInput(t)
                 print(f"  Input u: {u_step1.flatten()}")

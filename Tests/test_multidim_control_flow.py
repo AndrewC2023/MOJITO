@@ -7,7 +7,7 @@ from pathlib import Path
 root_dir = Path(__file__).parent.parent
 sys.path.append(str(root_dir / "src"))
 
-from Controls.NACMPC import SplineInterpolationInput
+from Controls.NBBMPC import SplineInterpolationInput
 
 print("=== Testing Multi-Dimensional Control Flow ===\n")
 
@@ -45,7 +45,7 @@ print(f"\n1. Optimizer provides flat decision vector:")
 print(f"   Shape: {decision_vector_1d.shape}")
 print(f"   Values: {decision_vector_1d}")
 
-# Step 2: NACMPC parses and passes to input function
+# Step 2: NBBMPC parses and passes to input function
 # The input function's updateKeyFrameValues handles reshaping
 input_func.updateKeyFrameValues(decision_vector_1d)
 
@@ -74,7 +74,7 @@ print(f"   - dt: scalar")
 print(f"   - **kwargs: collision_result, is_terminal, etc.")
 
 # Verify the flow with all three input types
-from Controls.NACMPC import PiecewiseConstantInput, LinearInterpolationInput
+from Controls.NBBMPC import PiecewiseConstantInput, LinearInterpolationInput
 
 print(f"\n=== Verification: All Input Functions Handle Multiple Dimensions ===\n")
 

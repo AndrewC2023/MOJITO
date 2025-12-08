@@ -1,6 +1,6 @@
-"""Comprehensive NACMPC Module Validation Test
+"""Comprehensive NBBMPC Module Validation Test
 
-This test validates that the NACMPC controller:
+This test validates that the NBBMPC controller:
 1. Correctly interfaces with Vehicle dynamics
 2. Properly decodes decision vectors into control trajectories
 3. Rolls out dynamics with collision detection
@@ -28,19 +28,19 @@ import fcl
 from Vehicles.Vehicle import Vehicle
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
 from ConfigurationSpace.Obstacles import StaticObstacle
-from Controls.NACMPC import NACMPC, PiecewiseConstantInput, LinearInterpolationInput, SplineInterpolationInput
+from Controls.NBBMPC import NBBMPC, PiecewiseConstantInput, LinearInterpolationInput, SplineInterpolationInput
 from Optimizers.CrossEntropyMethod import CrossEntropyMethod
 from Optimizers.OptimizerBase import CostFunction
 
 print("="*80)
-print("NACMPC MODULE COMPREHENSIVE VALIDATION")
+print("NBBMPC MODULE COMPREHENSIVE VALIDATION")
 print("="*80)
 
 # ============================================================================
-# TEST 1: NACMPC Initialization and Configuration
+# TEST 1: NBBMPC Initialization and Configuration
 # ============================================================================
 print("\n" + "="*80)
-print("TEST 1: NACMPC Initialization")
+print("TEST 1: NBBMPC Initialization")
 print("="*80)
 
 # Create configuration space
@@ -162,8 +162,8 @@ optimizer = CrossEntropyMethod(
 )
 print(f"Optimizer created")
 
-# Create NACMPC controller
-mpc = NACMPC(
+# Create NBBMPC controller
+mpc = NBBMPC(
     vehicle=vehicle,
     costFunction=cost_func,
     optimizer=optimizer,
@@ -175,13 +175,13 @@ mpc = NACMPC(
     maxHorizon=horizon,
     debug=False
 )
-print(f"NACMPC controller created")
+print(f"NBBMPC controller created")
 print(f"  Horizon: {mpc.maxHorizon}s (fixed)")
 print(f"  Physics dt: {mpc.physics_dt}s")
 print(f"  Total steps: {int(mpc.maxHorizon / mpc.physics_dt)}")
 print(f"  Decision vector dimension: {num_keyframes * control_dim}")
 
-print("\nTEST 1 PASSED: NACMPC initialization successful")
+print("\nTEST 1 PASSED: NBBMPC initialization successful")
 
 # ============================================================================
 # TEST 2: Decision Vector Decoding
@@ -365,7 +365,7 @@ pwc_input = PiecewiseConstantInput(
     u_max=1.0
 )
 
-mpc_pwc = NACMPC(
+mpc_pwc = NBBMPC(
     vehicle=vehicle,
     costFunction=cost_func,
     optimizer=optimizer,
@@ -393,7 +393,7 @@ linear_input = LinearInterpolationInput(
     u_max=1.0
 )
 
-mpc_linear = NACMPC(
+mpc_linear = NBBMPC(
     vehicle=vehicle,
     costFunction=cost_func,
     optimizer=optimizer,
@@ -415,7 +415,7 @@ print(f"LinearInterpolationInput: cost={cost_linear:.2f}")
 # Test with SplineInterpolationInput (already tested above)
 print(f"SplineInterpolationInput: cost={total_cost:.2f} (from TEST 5)")
 
-print("\nTEST 6 PASSED: All input function types work with NACMPC")
+print("\nTEST 6 PASSED: All input function types work with NBBMPC")
 
 # ============================================================================
 # TEST 7: Dimension Validation Throughout Pipeline
@@ -468,10 +468,10 @@ print("\nTEST 7 PASSED: Dimension validation successful")
 # SUMMARY
 # ============================================================================
 print("\n" + "="*80)
-print("ALL NACMPC MODULE TESTS PASSED ")
+print("ALL NBBMPC MODULE TESTS PASSED ")
 print("="*80)
 print("\nValidated Components:")
-print("1. NACMPC initialization with all parameters")
+print("1. NBBMPC initialization with all parameters")
 print("2. Decision vector decoding via input functions")
 print("3. Dynamics rollout with collision detection")
 print("4. Cost function evaluation at different states")

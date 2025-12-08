@@ -1,7 +1,7 @@
 """
-Double Integrator 3D - NACMPC Framework Validation
+Double Integrator 3D - NBBMPC Framework Validation
 
-Validates NACMPC with stable 3D point mass dynamics and collision avoidance.
+Validates NBBMPC with stable 3D point mass dynamics and collision avoidance.
 Demonstrates smooth spline control navigating around obstacles.
 """
 
@@ -20,13 +20,13 @@ sys.path.append(str(root_dir / "src"))
 from ConfigurationSpace.ConfigSpace3D import ConfigurationSpace3D
 from ConfigurationSpace.Obstacles import StaticObstacle
 from Vehicles.Vehicle import Vehicle
-from Controls.NACMPC import NACMPC
+from Controls.NBBMPC import NBBMPC
 from Optimizers.OptimizerBase import CostFunction
 from Optimizers.CrossEntropyMethod import CrossEntropyMethod
-from Controls.NACMPC import SplineInterpolationInput
+from Controls.NBBMPC import SplineInterpolationInput
 
 print("="*80)
-print("DOUBLE INTEGRATOR 3D - NACMPC VALIDATION")
+print("DOUBLE INTEGRATOR 3D - NBBMPC VALIDATION")
 print("="*80)
 
 # ============================================================================
@@ -251,10 +251,10 @@ optimizer = CrossEntropyMethod(
 print(f"CEM Optimizer: pop=200, elites=15%, iters=100, alpha=0.05")
 
 # ============================================================================
-# NACMPC Controller
+# NBBMPC Controller
 # ============================================================================
 
-mpc = NACMPC(
+mpc = NBBMPC(
     vehicle=vehicle,
     costFunction=cost_func,
     optimizer=optimizer,
@@ -573,7 +573,7 @@ if cost_func.best_state:
     print(f"Velocity: {final_vel_mag:.4f}m/s (tolerance: {velocity_tolerance}m/s)")
     
     if success:
-        print(f"TEST PASSED - NACMPC framework validated")
+        print(f"TEST PASSED - NBBMPC framework validated")
     else:
         print(f" TEST FAILED - Tolerance not met")
     print(f"{'='*80}\n")
