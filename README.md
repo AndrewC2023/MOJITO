@@ -33,7 +33,7 @@ This project uses a dev container for consistent development environments.
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop)
 2. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) in VS Code
 3. Open this folder in VS Code
-4. When prompted, click "Reopen in Container" (or use Command Palette: `Dev Containers: Reopen in Container`)
+4. When prompted, click "Reopen in Container" or navigate through the command pallete
 5. The container will build and install all dependencies including PyTorch
 
 #### Without VS Code (Docker CLI)
