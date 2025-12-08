@@ -174,19 +174,12 @@ For MPC with black-box optimizer (PSO/GA):
 - Distance queries: ~{num_queries/elapsed:.0f} queries/sec  
 - Full trajectory eval: ~{num_trajectories/elapsed:.0f} trajectories/sec
 
-Expected performance for your use case:
+Expected performance for use case:
 - Population size: 100 particles/individuals
 - Horizon: 20 steps
 - Max iterations: 50
 - Total evals per MPC step: ~100,000 collision checks
 - Estimated time: ~{100000/(num_checks/elapsed):.2f} seconds per MPC iteration
-
-Optimization status: Pass! OPTIMIZED
-- Cached FCL request objects
-- Direct collision object updates (no recreation)
-- Early exit on collision detection
-- Fast AABB bounds checking
-- Cached state indices in Vehicle class
     """)
 
 

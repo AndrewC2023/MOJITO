@@ -35,6 +35,8 @@ def rosenbrock(x):
     """Rosenbrock function (banana valley): challenging nonconvex problem.
     f(x) = sum_{i=1}^{n-1} [100(x_{i+1} - x_i^2)^2 + (1 - x_i)^2]
     Global minimum: f(1, 1, ...) = 0
+
+    this is an implementation for n-dimensional input, just had to look it up
     """
     return np.sum(100.0 * (x[1:] - x[:-1]**2)**2 + (1 - x[:-1])**2)
 
@@ -264,5 +266,5 @@ if __name__ == "__main__":
     test_cem_with_bounds()
     
     print("\n" + "#"*60)
-    print("#  ALL TESTS PASSED")
+    print("#  ALL TESTS COMPLETE")
     print("#"*60)
